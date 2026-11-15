@@ -8,7 +8,8 @@ a button runs :func:`tsw.direct.perform` on the ``status-app`` channel, the same
 ``legacy/``; a Markdown file asked for with ``?view=html`` comes back rendered
 (:mod:`tsw.host.markdown`) for the page's document dialog (T278).
 
-Requests are admitted only with this run's token (DN006 §8.10, DN008 §9): it is printed in the
+Requests are admitted only with this run's token (DN006 §8.10, DN008 §9; the hosted service
+checks tokens against the hashes ``tsw dashboard open`` stored, T283): it is printed in the
 terminal and put in the address the browser is opened with; the first visit trades it for an
 HttpOnly, SameSite=Strict cookie and drops it from the address. A button request must also carry
 the token in a header, and ``Host`` and ``Origin`` must name this server, so neither another page
@@ -35,7 +36,7 @@ from tsw import direct
 from tsw.config import load_config
 from tsw.context.index import index_path, read_card
 from tsw.errors import TswError, rejected
-from tsw.events import Event
+from tsw.events import Event, utc_now
 from tsw.home import Home
 from tsw.host.markdown import MAX_SOURCE_CHARS, render_markdown
 from tsw.host.status import AppView, Revision, render
@@ -43,6 +44,7 @@ from tsw.host.task_view import card_state, not_found, render_task, timeline
 from tsw.ledger import Ledger
 from tsw.storage.fs import FsStorage
 
+HEALTH_PATH = "/healthz"
 # The cookie is named per port: browsers share cookies across the ports of one host.
 COOKIE = "tsw_status"
 TOKEN_HEADER = "X-TSW-Token"
@@ -102,13 +104,34 @@ def history(events: Iterable[Event]) -> dict[str, list[Revision]]:
 class StatusApp:
     """The state shared by the request handlers of one ``tsw status serve`` run."""
 
-    def __init__(self, home: Home, token: str | None = None) -> None:
+    def __init__(
+        self,
+        home: Home,
+        token: str | None = None,
+        *,
+        cookie_max_age: int | None = None,
+        health: Mapping[str, Any] | None = None,
+        verify: Callable[[str], bool] | None = None,
+    ) -> None:
         self.home = home
         self.token = token or secrets.token_urlsafe(24)
+        # The hosted service (T283, CC006 §12): tokens checked against the stored hashes (each
+        # browser keeps its own), a persistent cookie, and a token-free /healthz.
+        self.verify = verify
+        self.cookie_max_age = cookie_max_age
+        self.health = dict(health) if health is not None else None
         self.instance = secrets.token_hex(4)
         self.port = 0
         self._count = 0
         self._lock = threading.Lock()
+
+    def admits(self, token: str) -> bool:
+        """Whether a presented token signs in: this run's, or one the hosted service lists."""
+        if not token:
+            return False
+        if self.verify is not None:
+            return self.verify(token)
+        return hmac.compare_digest(token, self.token)
 
     def next_ref(self) -> str:
         with self._lock:
@@ -127,7 +150,8 @@ class StatusApp:
         )
         return ledger, config
 
-    def page(self) -> str:
+    def page(self, token: str | None = None) -> str:
+        """The board; ``token`` is the requesting browser's, which its buttons send back."""
         ledger, _ = self.ledger()
         with ledger.view() as conn:
             actions: dict[str, tuple[tuple[str, ...], str | None]] = {}
@@ -135,9 +159,10 @@ class StatusApp:
                 found = direct.availability(conn, row)
                 actions[str(row["task_id"])] = (found.actions, found.cancel_blocked)
             past = history(ledger.storage.read(since=0))
-            return render(conn, AppView(token=self.token, actions=actions, history=past))
+            view = AppView(token=token or self.token, actions=actions, history=past)
+            return render(conn, view)
 
-    def task_page(self, task_id: str) -> tuple[bool, str]:
+    def task_page(self, task_id: str, token: str | None = None) -> tuple[bool, str]:
         """The task's view (DN006 §8.10); False with the not-found page when there is no task."""
         ledger, _ = self.ledger()
         with ledger.view() as conn:
@@ -147,7 +172,7 @@ class StatusApp:
                 found = direct.availability(conn, row)
                 actions[task_id] = (found.actions, found.cancel_blocked)
             events = list(ledger.storage.read(since=0))
-            view = AppView(token=self.token, actions=actions, history=history(events))
+            view = AppView(token=token or self.token, actions=actions, history=history(events))
             steps = timeline(events).get(task_id, [])
             # The index card is read without touching the index (DN006 §8.10, T278).
             card = card_state(
@@ -209,14 +234,15 @@ def _handler(app: StatusApp) -> type[BaseHTTPRequestHandler]:
                 f"http://localhost:{app.port}",
             )
 
-        def _cookie_ok(self) -> bool:
+        def _cookie_token(self) -> str | None:
+            """The browser's token from its cookie, when it signs in."""
             cookie = SimpleCookie()
             try:
                 cookie.load(self.headers.get("Cookie") or "")
             except CookieError:  # a malformed cookie header is just not admitted
-                return False
+                return None
             morsel = cookie.get(f"{COOKIE}_{app.port}")
-            return morsel is not None and hmac.compare_digest(morsel.value, app.token)
+            return morsel.value if morsel is not None and app.admits(morsel.value) else None
 
         # ------------------------------------------------------------ responses
 
@@ -254,12 +280,17 @@ def _handler(app: StatusApp) -> type[BaseHTTPRequestHandler]:
                 self._text(HTTPStatus.FORBIDDEN, "只接受本机地址的访问")
                 return
             url = urlsplit(self.path)
+            if url.path == HEALTH_PATH and app.health is not None:
+                self._json(HTTPStatus.OK, app.health)
+                return
             given = parse_qs(url.query).get("token", [""])[0]
             if url.path == "/" and given:
-                if not hmac.compare_digest(given, app.token):
+                if not app.admits(given):
                     self._text(HTTPStatus.FORBIDDEN, "令牌无效：请打开 tsw status serve 输出的地址")
                     return
-                cookie = f"{COOKIE}_{app.port}={app.token}; HttpOnly; SameSite=Strict; Path=/"
+                cookie = f"{COOKIE}_{app.port}={given}; HttpOnly; SameSite=Strict; Path=/"
+                if app.cookie_max_age:
+                    cookie += f"; Max-Age={app.cookie_max_age}"
                 self._send(
                     HTTPStatus.SEE_OTHER,
                     b"",
@@ -267,18 +298,20 @@ def _handler(app: StatusApp) -> type[BaseHTTPRequestHandler]:
                     {"Location": "/", "Set-Cookie": cookie},
                 )
                 return
-            if not self._cookie_ok():
+            token = self._cookie_token()
+            if token is None:
                 self._text(
                     HTTPStatus.FORBIDDEN,
-                    "需要令牌：请打开运行 tsw status serve 的终端中输出的地址",
+                    "需要令牌：请打开运行 tsw status serve 的终端中输出的地址"
+                    "（常驻服务：在终端运行 tsw dashboard open）",
                 )
                 return
             if url.path == "/":
-                self._serve(lambda: app.page().encode("utf-8"), "text/html; charset=utf-8")
+                self._serve(lambda: app.page(token).encode("utf-8"), "text/html; charset=utf-8")
                 return
             parts = url.path.split("/")
             if len(parts) == 3 and parts[1] == "tasks" and parts[2]:
-                self._serve_task(unquote(parts[2]))
+                self._serve_task(unquote(parts[2]), token)
                 return
             self._serve_file(unquote(url.path), parse_qs(url.query).get("view", [""])[0])
 
@@ -290,9 +323,9 @@ def _handler(app: StatusApp) -> type[BaseHTTPRequestHandler]:
                 return
             self._send(HTTPStatus.OK, body, content_type)
 
-        def _serve_task(self, task_id: str) -> None:
+        def _serve_task(self, task_id: str, token: str) -> None:
             try:
-                found, page = app.task_page(task_id)
+                found, page = app.task_page(task_id, token)
             except TswError as exc:
                 self._text(HTTPStatus.SERVICE_UNAVAILABLE, f"错误 [{exc.code.value}] {exc.message}")
                 return
@@ -336,7 +369,8 @@ def _handler(app: StatusApp) -> type[BaseHTTPRequestHandler]:
                 self._json(HTTPStatus.FORBIDDEN, {"ok": False, "message": "只接受本页面的请求"})
                 return
             given = self.headers.get(TOKEN_HEADER) or ""
-            if not (self._cookie_ok() and hmac.compare_digest(given, app.token)):
+            token = self._cookie_token()
+            if token is None or not hmac.compare_digest(given, token):
                 self._json(HTTPStatus.FORBIDDEN, {"ok": False, "message": "令牌无效"})
                 return
             parts = [p for p in urlsplit(self.path).path.split("/") if p]
@@ -399,5 +433,30 @@ def serve_status(home: Home, *, port: int = 0, open_browser: bool = True) -> Non
         server.serve_forever()
     except KeyboardInterrupt:
         print("已停止", file=sys.stderr)
+    finally:
+        server.server_close()
+
+
+def serve_hosted(
+    home: Home,
+    *,
+    verify: Callable[[str], bool],
+    port: int,
+    commit: str | None,
+    key: str,
+    cookie_max_age: int,
+) -> None:
+    """Run the hosted Dashboard service (``tsw dashboard service``) until it is ended."""
+    health = {
+        "service": "tsw-dashboard",
+        "commit": commit,
+        "home_key": key,
+        "started_at": utc_now(),
+    }
+    app = StatusApp(home, cookie_max_age=cookie_max_age, health=health, verify=verify)
+    server = make_server(app, port)
+    print(f"TaskSteward Dashboard 服务：http://127.0.0.1:{app.port}/（{utc_now()}）", flush=True)
+    try:
+        server.serve_forever()
     finally:
         server.server_close()

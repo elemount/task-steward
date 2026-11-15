@@ -11,12 +11,13 @@ import argparse
 import json
 import os
 import sys
+import webbrowser
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
 from tsw import __version__, direct, lease
-from tsw.config import EffectiveConfig, lease_minutes, load_config
+from tsw.config import DEFAULTS, EffectiveConfig, lease_minutes, load_config
 from tsw.context import ContextService
 from tsw.errors import EXIT_CODES, ErrorCode, TswError
 from tsw.events import utc_now
@@ -27,9 +28,11 @@ from tsw.home import (
     locate_home,
     open_home,
     record_product_repo,
+    record_render,
     remember_home,
     resolve_home,
 )
+from tsw.host import dashboard_service
 from tsw.host.claude_code import install_hint, render_instructions
 from tsw.host.guard import run as run_guard
 from tsw.host.identity import HOST_CLI_COMMANDS, MAIN_SESSION_CLI_COMMANDS, SESSION_ENV, Identity
@@ -37,7 +40,10 @@ from tsw.host.identity import resolve as resolve_identity
 from tsw.host.mcp import serve
 from tsw.host.plugin_copy import RENDER_RESTART
 from tsw.host.plugin_copy import update as update_plugin
-from tsw.host.status_app import serve_status
+from tsw.host.status_app import serve_hosted, serve_status
+from tsw.host.update_plan import build as build_update_plan
+from tsw.host.version import head as product_head
+from tsw.host.version import render_record
 from tsw.importer import renumber
 from tsw.importer.orchestrator_agent import run_import as run_import_orchestrator_agent
 from tsw.ledger import Ledger
@@ -188,6 +194,87 @@ def _cmd_task_direct(args: argparse.Namespace) -> dict[str, Any]:
 def _cmd_status_serve(args: argparse.Namespace) -> dict[str, Any]:
     direct.require_outside_session(os.environ, "tsw status serve ")
     serve_status(_home(args), port=args.port, open_browser=not args.no_open)
+    return {"_silent": True}
+
+
+def _dashboard_port(home: Home, *, strict: bool = True) -> int:
+    """The hosted Dashboard's port: commands that act require a valid configuration; read-only
+    ones fall back to the default (and report the problems elsewhere)."""
+    config = load_config(home)
+    if strict:
+        config.require_valid()
+    elif not config.valid:
+        return int(DEFAULTS["dashboard"]["port"])
+    return int(config.get("dashboard.port"))
+
+
+def _cmd_dashboard_install(args: argparse.Namespace) -> dict[str, Any]:
+    direct.require_outside_session(os.environ, "tsw dashboard install ")
+    home = _home(args)
+    return dashboard_service.install(home, os.environ, _dashboard_port(home))
+
+
+def _cmd_dashboard_uninstall(args: argparse.Namespace) -> dict[str, Any]:
+    direct.require_outside_session(os.environ, "tsw dashboard uninstall ")
+    return dashboard_service.uninstall(_home(args), os.environ)
+
+
+def _cmd_dashboard_open(args: argparse.Namespace) -> dict[str, Any]:
+    direct.require_outside_session(os.environ, "tsw dashboard open ")
+    home = _home(args)
+    port = _dashboard_port(home)
+    url = dashboard_service.open_url(home, os.environ, port)
+    if not args.no_browser:
+        webbrowser.open(url)
+    return {
+        "opened": not args.no_browser,
+        "url": f"http://127.0.0.1:{port}/",
+        "note": "浏览器打开的地址带新令牌（只保存它的摘要），第一次访问后换成 cookie；之后可从上面"
+        "的地址安装为 PWA",
+    }
+
+
+def _cmd_dashboard_restart(args: argparse.Namespace) -> dict[str, Any]:
+    home = _home(args)
+    return dashboard_service.restart(home, os.environ, _dashboard_port(home))
+
+
+def _cmd_dashboard_status(args: argparse.Namespace) -> dict[str, Any]:
+    home = _home(args)
+    config = load_config(home)
+    state = dashboard_service.status(home, os.environ, _dashboard_port(home, strict=False))
+    return state if config.valid else {**state, "config_problems": config.problems}
+
+
+def _cmd_dashboard_service(args: argparse.Namespace) -> dict[str, Any]:
+    """The hosted service the logon task starts: no window, so output goes to a log file."""
+    direct.require_outside_session(os.environ, "tsw dashboard service ")
+    home = _home(args)
+    key = dashboard_service.home_key(home)
+    log = dashboard_service.log_path(os.environ, key)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    store = dashboard_service.read_store(os.environ, key)
+    saved = sys.stdout, sys.stderr
+    with log.open("w", encoding="utf-8") as stream:
+        sys.stdout = sys.stderr = stream
+        try:
+            if store is None:
+                print("Dashboard 常驻服务没有安装：先运行 tsw dashboard install", flush=True)
+                return {"ok": False, "reason": "not_installed"}
+            found = product_head()
+            serve_hosted(
+                home,
+                verify=dashboard_service.verifier(os.environ, key),
+                port=_dashboard_port(home),
+                commit=found.get("commit") if found else None,
+                key=key,
+                cookie_max_age=dashboard_service.COOKIE_MAX_AGE,
+            )
+        except OSError as exc:  # the port is taken, for one
+            print(f"Dashboard 服务启动失败：{exc}", flush=True)
+            return {"ok": False, "reason": "unavailable", "error": str(exc)}
+        finally:
+            sys.stdout, sys.stderr = saved
     return {"_silent": True}
 
 
@@ -381,6 +468,8 @@ def _cmd_host_render(args: argparse.Namespace) -> dict[str, Any]:
     home = _home(args)
     with FsStorage(home).writer():
         written = render_instructions(home)
+        # The commit now rendered: where the next self-update starts (DN006 §9.9).
+        record_render(home, render_record())
     # Keeping the host current is part of rendering for it: the plugin is Claude Code's cached
     # copy, which only Claude Code's own update replaces (T247; idempotent).
     return {
@@ -388,6 +477,33 @@ def _cmd_host_render(args: argparse.Namespace) -> dict[str, Any]:
         "plugin": update_plugin(os.environ),
         "restart": RENDER_RESTART,
     }
+
+
+def _cmd_host_update_plan(args: argparse.Namespace) -> dict[str, Any]:
+    """Read-only: the self-update's categories and actions (DN006 §9.8, CC006 §11.3)."""
+    home = _home(args)
+    config = load_config(home)
+    port = _dashboard_port(home, strict=False)
+    dashboard = dashboard_service.status(home, os.environ, port)
+    plan: dict[str, Any] = {
+        "env": os.environ,
+        # An invalid configuration plans with the defaults; its problems are reported.
+        "config": config.values if config.valid else DEFAULTS,
+        "to": args.to,
+        "start": getattr(args, "from"),
+        "running": args.running or [],
+        "dashboard": dashboard,
+    }
+    problems = {} if config.valid else {"config_problems": config.problems}
+    try:
+        with _ledger(args).view() as conn:
+            return {**build_update_plan(home, conn=conn, **plan), **problems}
+    except TswError as exc:
+        # After pulling a new projection version the ledger cannot be read until it is rebuilt;
+        # the plan says so first (DN006 §9.8, ``projection``).
+        if exc.details.get("reason") != "rebuild_required":
+            raise
+    return {**build_update_plan(home, conn=None, **plan), **problems}
 
 
 def _cmd_host_install_hint(args: argparse.Namespace) -> dict[str, Any]:
@@ -563,6 +679,20 @@ def build_parser() -> argparse.ArgumentParser:
         "在数据目录生成主会话的 CLAUDE.md、skill 与 worker 说明 roles/worker.md",
     )
     add(host, "install-hint", _cmd_host_install_hint, "显示插件安装步骤")
+    plan = add(
+        host,
+        "update-plan",
+        _cmd_host_update_plan,
+        "自我更新：按运行中的版本到目标提交的改动列出类别与动作（只读，DN006 §9.8）",
+    )
+    plan.add_argument("--to", help="目标提交（默认产品仓库的 HEAD）")
+    plan.add_argument("--from", help="明确的起点提交（默认取运行中的最旧版本）")
+    plan.add_argument(
+        "--running",
+        action="append",
+        metavar="COMMIT",
+        help="主会话运行时（whoami 的 runtime.commit）的提交，可重复",
+    )
 
     review = sub.add_parser("review", help="worker 自评审").add_subparsers(
         dest="review_command", required=True, metavar="<review command>"
@@ -608,10 +738,27 @@ def build_parser() -> argparse.ArgumentParser:
         serve_cmd = add(target, name, _cmd_status_serve, serve_help)
         serve_cmd.add_argument("--port", type=int, default=0, help="端口（默认任选空闲端口）")
         serve_cmd.add_argument("--no-open", action="store_true", help="不自动打开浏览器")
+        if name == "dashboard":
+            _add_dashboard_service(serve_cmd, add)
 
     add(sub, "quiesce", _cmd_quiesce, "静止数据目录（之后可直接复制）")
     add(sub, "resume-writes", _cmd_resume_writes, "解除静止")
     return parser
+
+
+def _add_dashboard_service(dashboard: argparse.ArgumentParser, add: Any) -> None:
+    """``tsw dashboard <command>``: the hosted service (DN006 §8.10, CC006 §12; T283). Plain
+    ``tsw dashboard`` still runs the Dashboard in this terminal."""
+    service = dashboard.add_subparsers(
+        dest="dashboard_command", required=False, metavar="<dashboard command>"
+    )
+    add(service, "install", _cmd_dashboard_install, "安装为登录时启动的常驻服务（固定端口）")
+    add(service, "uninstall", _cmd_dashboard_uninstall, "删除常驻服务与令牌")
+    opened = add(service, "open", _cmd_dashboard_open, "用浏览器打开常驻服务（带令牌）")
+    opened.add_argument("--no-browser", action="store_true", help="不打开浏览器，只核对令牌")
+    add(service, "restart", _cmd_dashboard_restart, "重启常驻服务（主会话或终端）")
+    add(service, "status", _cmd_dashboard_status, "常驻服务的状态（只读）")
+    add(service, "service", _cmd_dashboard_service, "运行常驻服务（由计划任务调用）")
 
 
 def iter_commands(parser: argparse.ArgumentParser | None = None) -> list[str]:
@@ -625,6 +772,8 @@ def iter_commands(parser: argparse.ArgumentParser | None = None) -> list[str]:
                 choices: dict[str, argparse.ArgumentParser] = action.choices  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
                 for name, child in choices.items():
                     walk(child, [*prefix, name])
+                if not action.required and prefix:  # the command also runs on its own
+                    found.append(" ".join(prefix))
                 return
         found.append(" ".join(prefix))
 

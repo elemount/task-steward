@@ -1,6 +1,6 @@
 # CC008 Claude Code 上的护栏
 
-- 状态：设计草案（T242 r2；T243 增加例行会话的规则；T251 Worker Merge 规则覆盖仓库 worktree；T276 §6 worker 会话的 prompt 以 worker 说明开头，Worker Dispatch 规则随之更新；T272 CC-S4 提醒处置 worker 会话的标题与归档，主会话允许 `set_session_title`；T279 §6 Worker Merge 认可 `gh-account` skill 规定的单个环境变量前缀，§3 命令替换的分词）
+- 状态：设计草案（T242 r2；T243 增加例行会话的规则；T251 Worker Merge 规则覆盖仓库 worktree；T276 §6 worker 会话的 prompt 以 worker 说明开头，Worker Dispatch 规则随之更新；T272 CC-S4 提醒处置 worker 会话的标题与归档，主会话允许 `set_session_title`；T279 §6 Worker Merge 认可 `gh-account` skill 规定的单个环境变量前缀，§3 命令替换的分词；T282 §5.7 主会话自我更新：在会话中运行 `tsw host render`，其他会话仍拒绝）
 - 日期：2026-11-08
 - 实现：[DN008 校验原则](../DN008-guardrails.md)
 - 相关：[CC001 Claude Code 上的会话与 hooks](CC001-sessions-and-hooks.md) · [CC006 Claude Code 插件](CC006-plugins.md)
@@ -98,7 +98,7 @@
 | --- | --- | --- |
 | 按 `CLAUDE_CODE_HOST_SESSION_ID` 解析角色：worker、已撤销（不回落为主会话）、主会话、待绑定、其他 | 保留 | 每个会话拿到正确的角色、工具与上下文；措辞从“防冒充”改为这一点 |
 | 会话目录只作一致性检查 | 保留 | — |
-| 已登记会话中 CLI 只开放 `HOST_CLI_COMMANDS`，其他命令以 `host_session_cli` 拒绝 | 保留 | tsw 自己的接口：用 `tsw tool run --role …` 代替 MCP 会让角色、租约由参数声明（走错步骤）；拒绝信息指向 MCP 工具 |
+| 已登记会话中 CLI 只开放 `HOST_CLI_COMMANDS`，其他命令以 `host_session_cli` 拒绝 | 保留 | tsw 自己的接口：用 `tsw tool run --role …` 代替 MCP 会让角色、租约由参数声明（走错步骤）；拒绝信息指向 MCP 工具。例外：`host render` 主会话可以运行（用户确认由 skill 约束），其他任何会话都拒绝（§5.7，T282） |
 | 租约记录机器标识 | 保留 | 状态漂移 |
 | 不在 prompt 中放 token | 保留 | 理由改为“没有必要：会话 ID 已足够区分角色” |
 
@@ -139,6 +139,29 @@ G-PLAN、G-DEP、G-LEASE、G-SLOT、G-RES、G-WINDOW、G-ONE-ATTEMPT、G-PAUSE�
 | --- | --- | --- |
 | 摘要链（`checksum` / `prev`）、`ledger audit`、投影与账本不一致时拒绝写、重建前审计、备份 manifest、未知事件类型停止归约 | 保留 | 措辞改为“检测截断、损坏与意外修改”，删去“防篡改” |
 | 报告草稿须在本 attempt 的 `work/` 中；评审输出按 schema 解析；评审模型须与配置一致；导入快照路径不越界；配置与任务书的输入校验 | 保留 | 对象错误、跳过评审、输入错误 |
+
+### 5.7 主会话自我更新：会话中的 `tsw host render`（T282）
+
+用户 2026-11-15 决定（长期偏好 P-1）：**主会话可以自我更新**。用户明确确认时，主会话可以自己运行 `tsw host render`（重新生成数据目录的 `CLAUDE.md`、skill、worker 说明与设置，并更新插件副本，DN006 §6.2、CC006 §2）。此前它与 `restore`、`quiesce` 一样只由用户在终端运行（DN006 §9.7），产品更新后主会话只能请用户切到终端。
+
+**允许与拒绝**：CLI 按会话角色决定，不看参数。
+
+| 调用者 | `tsw host render` |
+| --- | --- |
+| 会话外的终端（没有 `CLAUDE_CODE_HOST_SESSION_ID`、`CLAUDECODE`） | 照旧运行 |
+| 主会话：在数据目录打开、角色为 orchestrator（不论是否持有租约：render 不写账本） | 运行 |
+| worker、例行会话、已撤销、待绑定 | 拒绝（`host_session_cli`），拒绝信息写明只有主会话可以运行，请主会话或用户运行 |
+| 其他目录中的 Claude 会话（角色 none），以及只有 `CLAUDECODE`、没有会话 ID 的会话 | 拒绝（`host_session_cli`）：tsw 无法确认它是主会话，请用户在终端运行或交给主会话。此前 CLI 守卫不管无关会话，它们可以运行 render；T282 起收紧 |
+
+其他命令不变：`task accept` / `reject` / `cancel`、`dashboard` / `status serve` 与不带 `--user-source` 的 `lease takeover` 在任何会话中都拒绝（§5.5，用户本人的操作）；`restore`、`quiesce` / `resume-writes` 仍由用户在终端运行；`tool run --role` 等写入口仍以 `host_session_cli` 拒绝（§5.2）。
+
+**角色怎样判断**（与其他命令相同，§5.2）：Claude Code 给每个会话的进程（包括 Bash 中运行的命令）设置 `CLAUDE_CODE_HOST_SESSION_ID`。`tsw` 命令行看到它，就按账本解析这个会话 ID：绑定过 attempt 的是 worker（attempt 结束后为已撤销），绑定例行会话代次的是例行会话，在数据目录打开、没有绑定的是主会话。会话 ID 由宿主给出，不由命令行参数声明，所以 worker 不能在命令中声称自己是主会话。另有一层 hook：PreToolUse 对已登记会话的 Bash 命令分词，识别其中的 `tsw host render`（含 `python -m tsw`、启动器写法），worker、已撤销、待绑定会话直接拒绝，例行会话的 Bash 已由 CC-B11 整体拒绝；主会话不拦。无关会话不经 tsw hooks，由 CLI 拒绝。两层都防误认（worker 以为自己该更新宿主），不防同一用户下故意去掉环境变量的进程（DN008 §2）。
+
+**“明确确认”由主会话负责，tsw 不核对**：用户明确确认是用户在主会话中、针对这一次 render 说的话，例如回答主会话的提问时说“可以，执行 host render”，或者这一轮的消息本身就要求运行；主会话自己的判断、worker 与例行会话的消息、定时提示都不算。orchestrate skill 与插件不一致的 SessionStart 提示要求主会话先向用户说明 render 要做的事并请用户确认，得到确认后再运行。tsw 不加确认参数：用户 2026-11-15 决定（T282），引用用户原话的参数只能证明主会话引用了用户这一轮的某段话，不能证明这段话是确认，核对增加了步骤却不能真正验证；render 只改可重建的文件与插件副本，误运行的代价是重新加载一次。不记账本事件：render 不改变账本事实，用户在终端运行时同样不记。
+
+**auto 模式与允许规则**：不新增。主会话在用户确认后运行，确认就在对话中，分类器按用户意图判断，应当放行；`default` 模式下宿主还会弹一次权限确认，这是宿主自己的保护。tsw 不为它生成 `Bash` 允许规则：render 会改写数据目录的 `.claude/settings.json`，tsw 不预先放行改写权限设置的命令。live 中若出现误拦，按 §6 的原则在 install hint 中加一条只描述“主会话在用户确认后运行单独的 `tsw host render`”的规则。
+
+**render 之后**：Claude Code 在会话开始时加载 `CLAUDE.md`、skill、插件的 hooks 与 MCP server，MCP server 载入的是当时的 tsw 运行时（CC006 §2），所以已在运行的会话看不到 render 的结果。会话不能重启自己：render 的输出带 `restart` 写明这一点，主会话据此告诉用户：本会话之后仍按旧的说明与运行时工作，请用户方便时重启 Claude 会话（插件副本有更新时 `plugin.next` 给出同样的提示）。worker 说明 `roles/worker.md` 已在磁盘上更新：之后创建的 worker 直接使用，已有 worker 由 hook 在下一轮提示重读（DN006 §6.2）。
 
 ## 6. 允许规则与 auto 模式规则
 

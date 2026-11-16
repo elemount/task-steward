@@ -22,6 +22,7 @@ from typing import IO, Any
 from tsw import __version__, confedit, lease
 from tsw.config import EffectiveConfig, lease_minutes, load_config
 from tsw.context import ContextService, Reader
+from tsw.context.index import index_path, read_card
 from tsw.errors import ErrorCode, TswError, rejected
 from tsw.events import utc_now
 from tsw.home import Home, open_home, workdir_path
@@ -31,6 +32,7 @@ from tsw.host.identity import Identity, resolve, within
 from tsw.host.maintenance import Maintenance
 from tsw.host.version import runtime as runtime_info
 from tsw.ledger import Ledger
+from tsw.machine import candidates as candidates_mod
 from tsw.machine import routine as routine_mod
 from tsw.machine.ask_user import user_channels
 from tsw.machine.base import REGISTRY, Caller
@@ -65,7 +67,8 @@ HOST_TOOLS: dict[str, tuple[tuple[str, ...], str, dict[str, Any]]] = {
     ),
     "task_read": (
         ("orchestrator", "worker"),
-        "读取任务（worker 只能读授权读取集合中的任务）：含 follow_ups 与 follow_up_of",
+        "读取任务（worker 只能读授权读取集合中的任务）：含 follow_ups、follow_up_of、"
+        "preference_candidates 与 preference_scan（任务结束时的偏好候选，DN007 §6.3）",
         {"type": "object", "properties": {"task_id": {"type": "string"}}, "required": ["task_id"]},
     ),
     "task_list": (("orchestrator",), "列出任务", EMPTY),
@@ -239,9 +242,9 @@ HOST_TOOLS: dict[str, tuple[tuple[str, ...], str, dict[str, Any]]] = {
             "properties": {
                 "query": {"type": "string", "description": "主题词（不写时列出范围内全部）"},
                 "kind": {
-                    "enum": ["standing", "task", "one_time"],
+                    "enum": ["standing", "task", "one_time", "candidate"],
                     "description": "只要某一类：standing 长期偏好、task 任务决定、"
-                    "one_time 一次性授权",
+                    "one_time 一次性授权、candidate 偏好候选（不能作为依据，DN007 §6.3）",
                 },
                 "scope": {"enum": ["global", "repo", "task"]},
                 "repo": {"type": "string"},
@@ -259,6 +262,22 @@ HOST_TOOLS: dict[str, tuple[tuple[str, ...], str, dict[str, Any]]] = {
         ("orchestrator", "worker"),
         "一个任务的完整过程（只读）：attempt、评审轮次与意见、决定、问答、follow-up、产出与事件时间线",
         {"type": "object", "properties": {"task_id": {"type": "string"}}},
+    ),
+    "preference_sources": (
+        ("orchestrator", "worker"),
+        "任务结束时搜集偏好候选的材料（只读，DN007 §6.3）：本任务账本中的用户原话（M-…、"
+        "E<序号>、goal@r<n>）、能到达本仓库的现行偏好、已有候选、搜集状态，以及给子代理的 prompt"
+        "（原样交给 Agent 工具）；worker 缺省为本任务",
+        {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string"},
+                "report_path": {
+                    "type": "string",
+                    "description": "报告草稿的路径（只作线索，子代理自己读）",
+                },
+            },
+        },
     ),
     "context_rebuild": (
         ("orchestrator",),
@@ -757,7 +776,31 @@ class Server:
                 if who.role == "worker" and task_id not in self._readable(conn, who):
                     raise rejected("不在授权读取集合中", reason="read_scope", task_id=task_id)
                 task(conn, task_id)
-                return task_row(conn, task_id)
+                return {
+                    **task_row(conn, task_id),
+                    "preference_candidates": candidates_mod.of_task(conn, task_id),
+                    "preference_scan": candidates_mod.scan_status(
+                        conn, task_id, lambda since: ledger.storage.read(since=since)
+                    ),
+                }
+            if name == "preference_sources":
+                task_id = str(args.get("task_id") or who.task_id or "")
+                if not task_id:
+                    raise rejected("需要 task_id", reason="invalid_input", field="task_id")
+                # The user's words of other tasks are not a worker's (DN001 §7.2: this task only).
+                if who.role == "worker" and task_id != who.task_id:
+                    raise rejected(
+                        "worker 只能取本任务的材料", reason="read_scope", task_id=task_id
+                    )
+                report = args.get("report_path")
+                card = read_card(index_path(self.home), task_id).card or {}
+                return candidates_mod.sources(
+                    conn,
+                    ledger.storage.read(since=0),
+                    task_id,
+                    report_path=str(report) if isinstance(report, str) and report else None,
+                    projects=[str(p) for p in card.get("project_ids") or []],
+                )
             if name == "task_list":
                 return [
                     row_dict(r)

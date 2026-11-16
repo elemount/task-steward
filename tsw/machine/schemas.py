@@ -98,7 +98,11 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         workdir=S,
         branch=S,
         user_turn=B,
-        read_set=STRS,
+        read_set={
+            **STRS,
+            "description": "推荐读取集合：任务 ID；也可以是受理后才出现的适用偏好编号 P-…"
+            "（DN007 §6.1，须现行并能到达本任务，写进任务书）",
+        },
     ),
     "attempt_start": schema(
         ["task_id", "purpose", "user_turn"],
@@ -146,7 +150,15 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         result={**S, "description": "set_session_title / archive_session 的返回原文"},
     ),
     "attempt_deliver": schema(["task_id"], task_id=S),
-    "attempt_continue": schema(["task_id"], task_id=S, read_set=STRS),
+    "attempt_continue": schema(
+        ["task_id"],
+        task_id=S,
+        read_set={
+            **STRS,
+            "description": "扩大推荐读取集合：任务 ID 或适用偏好编号 P-…；补充偏好时立即重写"
+            "任务书（DN007 §6.1）",
+        },
+    ),
     "attempt_update": schema(
         ["task_id", "attempt", "event", "evidence"],
         task_id=S,
@@ -530,6 +542,15 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             **SOURCE,
             "description": "用户明确表示长期适用的原话；target 为 "
             '["preference", <scope>, "standing"]',
+        },
+    ),
+    "preference_revoke": schema(
+        ["ref", "reason", "user_source"],
+        ref={**S, "description": "要撤销的偏好编号（P-…），须为现行的"},
+        reason={**S, "description": "撤销的理由，按用户原意写"},
+        user_source={
+            **SOURCE,
+            "description": '用户要求撤销的原话；target 为 ["preference", <编号>, "revoke"]',
         },
     ),
 }

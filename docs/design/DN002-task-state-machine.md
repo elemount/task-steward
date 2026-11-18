@@ -1,6 +1,6 @@
 # DN002 任务状态机
 
-- 状态：设计草案（T233 r5，已按 PoC 结果修订；T251 §5.6 开始时为仓库任务创建 worktree；T262 §5.1a worker 登记会话中的需求变更；T270 §5.7 follow-up；T276 §5.7 follow-up 的定义与边界；T272 §5.8 worker 会话的标题与验收后归档）
+- 状态：设计草案（T233 r5，已按 PoC 结果修订；T251 §5.6 开始时为仓库任务创建 worktree；T262 §5.1a worker 登记会话中的需求变更；T270 §5.7 follow-up；T276 §5.7 follow-up 的定义与边界；T272 §5.8 worker 会话的标题与验收后归档；T292 §5.1 等待用户时的需求变更不作废待答问题）
 - 日期：2026-11-05
 - 相关：[DN001 总体架构](DN001-architecture.md) · [DN003 统一配置](DN003-unified-config.md) · [DN004 worker 自评审](DN004-worker-self-review.md) · [DN005 历史导入与 resume](DN005-history-import-and-resume.md) · [DN006 插件层](DN006-plugin-layer.md)
 
@@ -82,7 +82,7 @@
 | T09 | dispatching | ready | `attempt.dispatch_abandoned` | O | 有证据确认会话未创建（`attempt.not_created`）；`starting` 阶段结果未知时不能走 T09，须先对账 | 当前创建代次标为失效；attempt 回到 `planned`（同一编号，未产生过会话）；释放名额与资源，保留执行目录 |
 | T10 | dispatching | paused | `task.paused` | O | 执行目录冲突（分支已存在且内容不明等）需要用户决定 | 类别 `workdir_conflict`；释放名额，保留现场 |
 | T11 | in_progress | waiting_user | `input.escalated` | W / O | worker 在本会话直接问用户（`ask_user`，DN006 §8.1a：任务内的提问、评审预算用完、阻断项延后请求、评审器不可用）；或主会话对跨任务事项判断后决定交给人类，或 `input.triage=human_direct` 时直接交给人类 | worker 提问：问题留在 worker 会话，记录转交时间，不进入主会话 inbox；主会话交给人类：生成 InputRequest（含主会话的分析），按 `input.channels` 投递人类渠道 |
-| T12 | waiting_user | in_progress | `input.resolved` | U / O | 第一个生效的答复：任一人类渠道中通过核实的用户答复（worker 会话中由宿主集成记录、worker 引用的原话，主会话消息、Teams 回复、Portal 提交）；或问题已转交主会话（`input.handed_off`，DN006 §8.1b）且不属于保留事项时，主会话在授权边界内代答（`handoff_resolve`，不满足 G-USER）。超时不是答复；转交前主会话不能代答 | 等待期间 revision 未变：回到离开时的子状态，周期不变；revision 已变：进入 `executing`，旧评审失效，开启新周期 |
+| T12 | waiting_user | in_progress | `input.resolved` | U / O | 第一个生效的答复：任一人类渠道中通过核实的用户答复（worker 会话中由宿主集成记录、worker 引用的原话，主会话消息、Teams 回复、Portal 提交），请求仍为 `pending` 且绑定的 attempt 与代次与当前一致（等待期间登记了需求变更、revision 已变时问题仍然有效，§5.1）；或问题已转交主会话（`input.handed_off`，DN006 §8.1b）且不属于保留事项时，主会话在授权边界内代答（`handoff_resolve`，不满足 G-USER）。超时不是答复；转交前主会话不能代答 | 等待期间 revision 未变：回到离开时的子状态，周期不变；revision 已变（等待期间主会话登记了与问题无关的需求变更，§5.1）：进入 `executing`，旧评审失效，开启新周期 |
 | T13 | in_progress | verifying | `worker.submitted` | W | G-SUBMIT（含 §3.5 的合并要求） | 冻结提交 HEAD、报告路径、评审证据与合并记录；worker 同时用宿主的父会话消息工具唤醒主会话（DN001 §6.3） |
 | T14 | in_progress | paused | `task.paused` | O / W | G-PAUSE；worker 已停（外部等待、用户 park，或已核实失败且后台命令已停） | 释放名额；资源占用不释放 |
 | T15 | in_progress | ready | `attempt.lost` | O / P | 子会话不存在或已归档，且核实执行目录没有继续写入 | 原 attempt 记为 `replaced`；释放名额；再次派发时新建 attempt 复用现场 |
@@ -187,12 +187,28 @@
 
 | 当前状态 | 处理 |
 | --- | --- |
-| `intake` / `waiting_dependency` / `ready` / `paused` / `waiting_user` | 状态不变，任务书 revision 更新；必要时主会话重新规划依赖（记录 `dependency.rebound`，可能经 T06 / T05）；恢复执行时 worker 读取新 brief；`paused` 且 `resume_target=verifying` 时提交证据失效，只能经 T21 / T20 恢复 |
+| `intake` / `waiting_dependency` / `ready` / `paused` | 状态不变，任务书 revision 更新；必要时主会话重新规划依赖（记录 `dependency.rebound`，可能经 T06 / T05）；恢复执行时 worker 读取新 brief；`paused` 且 `resume_target=verifying` 时提交证据失效，只能经 T21 / T20 恢复 |
 | `dispatching` | 状态不变，brief 在绑定前更新到新 revision |
 | `in_progress` | 状态不变，子状态回到 `executing`（E07），旧评审失效，开启新周期；brief 更新到新 revision，主会话通知 worker 重读 |
+| `waiting_user` | 状态不变，待答问题不作废、继续等待用户；brief 更新到新 revision，主会话通知 worker 重读。变更本身就是对问题的回答时，主会话先登记答复再登记变更（见下文“等待用户时的变更”） |
 | `verifying` | 撤回提交，回到 `in_progress`（T17） |
 | `done` | 回到 `intake`（T23）；worker 登记时经 T28 回到 `in_progress`（§5.1a） |
 | `accepted` / `cancelled` / `archived` | 不接受修改；新建关联任务（新 ID），引用原成果 |
+
+**等待用户时的变更**（T292）：需求变更不等于回答了问题。任务在 `waiting_user` 时，主会话先判断用户的话是否回答了待答的问题，再按下表登记：
+
+| 情形 | 处理 |
+| --- | --- |
+| 变更与待答问题无关 | `task_update` 只登记变更：revision+1、重写任务书，任务保持 `waiting_user`，问题不作废、继续等待用户（超时转交照常）。主会话告诉 worker 任务书已更新，worker 重读后继续等待。之后任一渠道的答复照常经 T12 生效；因 revision 已变，回到 `executing` 并开启新周期，worker 按新 revision 继续 |
+| 变更本身就是对问题的回答 | 等同用户在主会话回答了问题：主会话先 `input_resolve` 登记答复（`user_source` 为用户在主会话的原话，渠道 `main-session`，经 T12 回到 `in_progress`），再 `task_update` 登记变更（E07，开启新周期），然后把答复与新任务书一并用消息告诉 worker。与 worker 侧“先 `user_answer` 再 `requirement_change`”（§5.1a）一致，不新增迁移 |
+| 拿不准 | 主会话先问用户这句话是否是在回答 worker 的问题（附问题编号与正文），按用户的答复走上面两种之一；不替用户认定 |
+| 随问题交出的评审事项 | 问题带着评审事项（预算用完、延后请求）时，跨 revision 的答复照常生效：追加的轮次计入答复开启的新周期；批准延后、认定不成立记在提问时的周期，对新 revision 的评审不再适用 |
+
+判断依据：问题的正文与选项（主会话用 `context_task` 读本任务的输入请求，worker 会话中的问题在转交前也在其中）对照用户的话。用户的话直接回应了问题（确认、选择、否定或修改问题所问的方案）就是回答；只增加或修改与问题无关的目标、范围或验收就不是。
+
+**反例（T285 a1）**：worker 问“设计可以确认吗”（Q-T285-1）后任务进入 `waiting_user`；用户在主会话中说“补图”，主会话只用 `task_update` 登记了需求变更（revision 3）。当时的规则把待答问题记为 `superseded`、任务仍停在 `waiting_user`：worker 完成新 revision 后 `review_run`、`self_check_failed`、`ask_user` 都被拒，只能由主会话用 `judge`（`decision: escalate`）按新 revision 重新提问（Q-T285-2）。“补图”是对“设计可以确认吗”的回答（不确认，要求补图），应当先 `input_resolve` 登记这个答复、任务回到执行中，再登记变更。
+
+T292 之前的账本里，主会话在 `waiting_user` 登记的变更把待答问题记为 `superseded`；重放时保持原样。仍因此停在 `waiting_user`、没有待答请求的任务，由主会话按原办法 `judge`（`decision: escalate`）按新 revision 重新提问，用户答复后经 T12 进入新周期。
 
 无论处于上表哪个状态，只要任务当前的 attempt 已有任务书（预启动、派发中、执行中或暂停中，attempt 不是 `replaced` / `closed`），需求变更都在同一事件中把这份任务书按新 revision 重写，并记下它的路径和要通知的会话（`standby` / `live` / `stopped` 的会话）。在预启动开始写任务书之前就已预启动、还没有任务书的待命会话，这时补写一份。主会话随后用消息告诉该会话重新读取。后来的决定或其他任务的结论影响到已登记、尚未完成的任务时，主会话立即按本节写回任务书（附用户来源），不依赖会话上下文保存这些信息。
 
@@ -207,10 +223,10 @@
 | `in_progress` | 状态不变，经 E07 回到 `executing`，开启新周期 |
 | `verifying` | 撤回提交，经 T17 回到 `in_progress`，开启新周期 |
 | `done`（未经用户验收） | 经 T28 回到 `in_progress`，开启新周期：主会话的技术验收失效（清除完成时间与提交证据；`review.md` 留作上一 revision 的记录，下次验收按新 revision 重写，上一次的结论保留在账本的 `task.accepted` 中）；重新占用任务声明的独占资源。G-RES 或 G-DEP 不满足时改经 T23 回到 `intake`：变更照样登记，worker 停下，由主会话重新规划后按 R-ATTEMPT 续用本会话 |
-| `waiting_user` | 拒绝：先用 `user_answer` 登记答复（可以引用同一条消息），回到 `in_progress` 后再登记变更 |
+| `waiting_user` | 拒绝：先用 `user_answer` 登记答复（可以引用同一条消息），回到 `in_progress` 后再登记变更；与主会话登记“变更本身就是回答”时的顺序相同（§5.1） |
 | `accepted` / `cancelled` / `archived` | 拒绝，提示由用户经主会话新建关联任务（新 ID），引用原成果 |
 | 其他状态 | worker 没有绑定的 live 会话（暂停、待派发等），不能登记；由主会话按 §5.1 处理 |
-| 同一事件中的副作用 | `revision+1`；写入用户原话、新目标与验收；按 §5.1 重写任务卡片与本 attempt 的任务书（同一路径，revision 更新；worker 就在本会话中，不需要再通知它重读）；待答输入请求记为 `superseded`；清除 `stale` 标记 |
+| 同一事件中的副作用 | `revision+1`；写入用户原话、新目标与验收；按 §5.1 重写任务卡片与本 attempt 的任务书（同一路径，revision 更新；worker 就在本会话中，不需要再通知它重读）；待答输入请求（`done` 时的 stale 请求）记为 `superseded`；清除 `stale` 标记 |
 | 名额 | T28 不检查 G-SLOT：worker 会话已经存在，用户正在其中工作；名额限制的是主会话的派发与恢复（T07、T20）。回到 `in_progress` 后照常计入占用，超过 `max_workers` 时主会话暂不派发新任务 |
 | 依赖传播 | 命令提交后立即以系统身份运行一次系统规则（`sync`）：下游按 §5.2 处理（`ready` 经 T06 回到等待依赖，占用名额的下游列入 `needs_stop` 由主会话停止，`done` 的下游标记 `stale` 并请用户决定） |
 | 评审周期与预算 | 每次变更开启新的提交周期：旧评审与 `finalize` 对新 revision 失效；本周期预算重新为 `max_rounds`，上一周期的追加不带入；轮次编号在 attempt 内继续递增。之后照常 `review_run`、`submit`（G-SUBMIT 针对新 revision 与新周期；已授权合并的仓库以新的 PR 合并） |
@@ -483,3 +499,14 @@ attempt 是一次执行尝试 `Txxx-aN`，绑定一个子会话和一个执行�
 下图由同一图源经 Mermaid 自动布局生成，用于核对连通性；阅读以 §3.1 为准。
 
 ![任务状态机（自动布局）](diagrams/auto/task-state-machine-topology.svg)
+
+## 附录 B：等待用户时需求变更的备选方案（T292，存档）
+
+§5.1 的“等待用户时的变更”采用方案 D：需求变更不作废待答问题，变更本身就是回答时由主会话先登记答复。用户 2026-11-17 否定了最初提出的方案 C，理由（原话）：“我觉得这不是问题，如果问题和revision更新无关，那么问题仍然应当等待用户，如果任务书更新本身就是回答问题的结果，那么应当相当于我在主会话回答了问题，应由主会话转达给worker并unblock不是吗？”
+
+| 方案 | 内容 | 未采用的原因 |
+| --- | --- | --- |
+| A | 变更仍作废待答问题、任务停在 `waiting_user`；放宽 worker 工具，在 `waiting_user` 且没有待答请求时也允许 `ask_user`、`review_run`、`self_check_failed`、`submit` | 状态与实际不符（worker 在执行，状态却是等用户）；每个 worker 工具都要多一种状态判断 |
+| B | 同 A，另加主会话的显式恢复工具，把没有待答请求的 `waiting_user` 任务送回 `in_progress` | 多一步人工操作，漏做时仍会卡住 |
+| C | 新增迁移 T29（`waiting_user` → `in_progress`，`task.requirement_changed`）：变更作废全部待答问题，同一事件回到执行并开启新周期，worker 按需重新提问 | 与问题无关的变更不应作废问题；变更本身就是回答时，应作为用户的答复登记并转告 worker，而不是把问题作废后再问 |
+| D（采用） | 变更不作废待答问题；与问题无关时继续等待，是回答时先 `input_resolve` 再 `task_update`；不新增迁移 | — |

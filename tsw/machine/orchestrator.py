@@ -239,7 +239,12 @@ def input_resolve(inp: Mapping[str, Any], env: ToolEnv) -> Command:
                 )
             ]
         binding = loads(request["binding"], {})
-        data: dict[str, Any] = {"request_id": request_id, "source": source, "answer": answer}
+        data: dict[str, Any] = {
+            "request_id": request_id,
+            "source": source,
+            "answer": answer,
+            "answered_revision": int(row["revision"]),
+        }
         drafts: list[EventDraft] = []
         if request["kind"] == "intake":
             require_status(row, "intake")
@@ -247,9 +252,10 @@ def input_resolve(inp: Mapping[str, Any], env: ToolEnv) -> Command:
         elif request["kind"] in ("escalation", "in_session"):
             require_status(row, "waiting_user")
             attempt_row = current_attempt(ctx.conn, task_id)
+            # A pending question outlives a requirement change made while it waits (DN002
+            # §5.1, T292): only another attempt or session makes the answer late.
             if (
-                binding.get("revision") != int(row["revision"])
-                or attempt_row is None
+                attempt_row is None
                 or binding.get("attempt") != attempt_row["attempt"]
                 or binding.get("generation") != int(attempt_row["generation"])
             ):
@@ -336,6 +342,19 @@ def requirement_change_event(
         "acceptance": acceptance,
         "spec_sha256": spec_sha,
         "user_source": dict(source),
+        # The requests the change makes void (DN002 §5.1, T292): a question the user is
+        # waiting on stays open, whatever changed; an intake question or a stale request does
+        # not. Events before T292 have no such list and closed every pending request.
+        "superseded_requests": []
+        if row["status"] == "waiting_user"
+        else [
+            str(r["request_id"])
+            for r in ctx.conn.execute(
+                "SELECT request_id FROM input_requests WHERE task_id = ? AND status = 'pending' "
+                "ORDER BY rowid",
+                (task_id,),
+            )
+        ],
         **(extra or {}),
     }
     current = current_attempt(ctx.conn, task_id)

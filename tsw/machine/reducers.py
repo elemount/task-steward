@@ -190,7 +190,16 @@ def requirement_changed(conn: sqlite3.Connection, event: Event) -> None:
             pause["resume_target"] = None
             pause["submission_invalidated"] = True
             _set(conn, task_id, pause=dumps(pause), submission=None)
-    _close_requests(conn, task_id, "superseded")
+    if "superseded_requests" in data:
+        # Since T292 the event names them: a question the user is waiting on stays open.
+        for request_id in data["superseded_requests"]:
+            conn.execute(
+                "UPDATE input_requests SET status = 'superseded' "
+                "WHERE request_id = ? AND task_id = ? AND status = 'pending'",
+                (request_id, task_id),
+            )
+    else:
+        _close_requests(conn, task_id, "superseded")
     _touch(conn, event)
 
 
@@ -239,6 +248,14 @@ def input_resolved(conn: sqlite3.Connection, event: Event) -> None:
                     "source": data["source"],
                     "answer": data.get("answer"),
                     **{k: data[k] for k in ("source_kind", "decision_id") if k in data},
+                    # The revision the answer took effect in (T292; absent before): the user's
+                    # later replies in the worker's session are late answers to it until the
+                    # next change. Older answers reduce exactly as before.
+                    **(
+                        {"revision": data["answered_revision"]}
+                        if "answered_revision" in data
+                        else {}
+                    ),
                 }
             ),
             data["request_id"],

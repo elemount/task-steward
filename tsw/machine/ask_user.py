@@ -161,18 +161,30 @@ def session_message(
     # replaced it, older questions never collect messages again.
     request = row_dict(
         conn.execute(
-            "SELECT s.request_id, s.answered_in_session, r.status, r.binding "
+            "SELECT s.request_id, s.answered_in_session, r.status, r.binding, r.resolution "
             "FROM in_session_requests s JOIN input_requests r ON r.request_id = s.request_id "
             "WHERE s.task_id = ? AND s.session_ref = ? "
             "ORDER BY r.rowid DESC LIMIT 1",
             (task_id, session_ref),
         ).fetchone()
     )
+    # A pending question is still asked after a requirement change (DN002 §5.1, T292); one
+    # already answered elsewhere collects late replies until the next change after its answer
+    # (answers recorded before T292 do not say their revision: the question's own is used).
     answers = (
         request is not None
         and not request["answered_in_session"]
-        and request["status"] in ("pending", "resolved")
-        and loads(request["binding"], {}).get("revision") == revision
+        and (
+            request["status"] == "pending"
+            or (
+                request["status"] == "resolved"
+                and (
+                    loads(request["resolution"], {}).get("revision")
+                    or loads(request["binding"], {}).get("revision")
+                )
+                == revision
+            )
+        )
     )
     message_id = next_item_id(conn, "session_messages", "message_id", "M", task_id)
     return EventDraft(
@@ -238,13 +250,14 @@ def _resolution(
     request: Mapping[str, Any],
     data: dict[str, Any],
 ) -> list[EventDraft] | None:
-    """T12 for a pending in-session question, or None when the binding no longer holds."""
+    """T12 for a pending in-session question, or None when the binding no longer holds: the
+    question belongs to another attempt or session. A requirement change made while it waits
+    does not void it (DN002 §5.1, T292); the answer then opens a new cycle."""
     require_status(dict(row), "waiting_user")
     binding = loads(request["binding"], {})
     attempt_row = current_attempt(ctx.conn, str(row["task_id"]))
     if (
-        binding.get("revision") != int(row["revision"])
-        or attempt_row is None
+        attempt_row is None
         or binding.get("attempt") != attempt_row["attempt"]
         or binding.get("generation") != int(attempt_row["generation"])
     ):
@@ -255,6 +268,7 @@ def _resolution(
         and int(row["waiting_revision"]) != int(row["revision"]),
         resume_substate=binding.get("substate") or "executing",
         resolves=binding.get("judgments", []),
+        answered_revision=int(row["revision"]),
     )
     return [
         EventDraft(
@@ -275,11 +289,17 @@ def _review_decisions(
     *,
     extension_limit: int | None,
 ) -> list[EventDraft]:
-    """Extra rounds, approved deferrals and overruled findings that come with an answer."""
+    """Extra rounds, approved deferrals and overruled findings that come with an answer.
+
+    An answer given after a requirement change opens a new cycle (DN002 §5.1, T292): the extra
+    rounds count in it, while deferrals and overrulings concern findings of the cycle the
+    question was asked in and are recorded there; they no longer apply to the new revision.
+    """
     task_id, revision = str(row["task_id"]), int(row["revision"])
     attempt_row = current_attempt(ctx.conn, task_id)
     assert attempt_row is not None
-    cycle = int(row["cycle"]) + (1 if data.get("new_cycle") else 0)
+    asked_in = int(row["cycle"])
+    cycle = asked_in + (1 if data.get("new_cycle") else 0)
     drafts: list[EventDraft] = []
     rounds = int(inp.get("extend_rounds") or 0)
     if rounds:
@@ -314,9 +334,9 @@ def _review_decisions(
                     data={
                         **base,
                         "attempt": attempt_row["attempt"],
-                        "cycle": cycle,
+                        "cycle": asked_in,
                         "findings": _findings(
-                            ctx.conn, task_id, str(attempt_row["attempt"]), cycle, refs
+                            ctx.conn, task_id, str(attempt_row["attempt"]), asked_in, refs
                         ),
                     },
                 )

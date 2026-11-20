@@ -713,12 +713,19 @@ def _say_plan(planned: dict[str, Any]) -> None:
             print(f"      {step['problem']}")
     for problem in planned["problems"]:
         print(f"  问题：{problem}")
+    notes: list[str] = planned.get("warnings") or []
+    for warning in notes:
+        print(f"  注意：{warning}")
 
 
 def _setup_interactive(args: argparse.Namespace) -> dict[str, Any]:
     """The terminal entry's flow (DN009 §4.1): check, ask, show the plan, confirm, install."""
     first = _setup_context(args, require=False)
-    checked = setup_steps.check(first)
+    # Only the machine can block here: saved answers that no longer hold are asked again below.
+    bare = setup_steps.context(
+        os.environ, answers={}, python=args.python, claude=args.claude, require_answers=False
+    )
+    checked = setup_steps.check(bare)
     blocking = [p for p in checked["problems"] if not p.startswith("home：")]
     print(f"产品检出：{checked['checkout']['path']}（{checked['checkout']['head']}）")
     print(f"Python：{checked['python']['path']}（{checked['python']['version']}）")
@@ -769,6 +776,9 @@ def _say_installed(result: dict[str, Any]) -> dict[str, Any]:
         mark = {True: "通过", False: "失败", None: "未核对"}[check["ok"]]
         extra = "（重启后生效）" if check.get("pending_reload") else ""
         print(f"  核对 {check['check']}：{mark}{extra}")
+    warnings: list[str] = result.get("warnings") or []
+    for warning in warnings:
+        print(f"  注意：{warning}")
     out: dict[str, Any] = {
         "installed": True,
         "record": result["record"],

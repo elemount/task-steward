@@ -45,7 +45,14 @@ from tsw.host.claude_code import AUTO_MODE_RULES, render_instructions
 from tsw.host.plugin_copy import update as update_plugin
 from tsw.host.version import REPO_ROOT, head, render_record
 from tsw.setup import winenv
-from tsw.setup.questions import Question, config_differences, config_layer, normalize, questions
+from tsw.setup.questions import (
+    Question,
+    config_differences,
+    config_layer,
+    normalize,
+    questions,
+    reviewer_warning,
+)
 from tsw.setup.record import (
     InstallRecord,
     answers_path,
@@ -75,11 +82,16 @@ MCP_PROTOCOL = "2025-06-18"
 RESTART = (
     "1. 完全退出并重新打开 Claude app（新的用户设置与插件在重新打开后才生效）；"
     "2. 在数据目录 {home} 中新建一个会话，它是主会话；"
-    "3. 在主会话中输入“开始示例任务”，看 TaskSteward 怎样执行一个任务"
-    "（可以跳过，之后随时说这句话）。"
+    "3. 在会话中输入 /orchestrate 开始主会话（以后每次开主会话都这样；换主会话时先在旧主会话中交接"
+    "调度租约）；新环境里主会话先给你导览，"
+    "并提议一个示例任务，看 TaskSteward 怎样执行一个任务（可以跳过，之后随时说“开始示例任务”）。"
     "需要时在主会话或新的终端中运行 tsw setup verify --after-reload 核对重新加载之后的结果"
 )
+# Reviewers an earlier version saved as an answer although this one does not implement them.
+LEGACY_REVIEWERS = ("claude-headless",)
 DEMO_PROMPT = "开始示例任务"
+# How the user starts every main session (DN009 §15.2, M-T308-8): the orchestrate skill.
+START_COMMAND = "/orchestrate"
 
 
 @dataclass
@@ -95,6 +107,7 @@ class Context:
     problems: list[str]
     record: InstallRecord
     questions: list[Question] = field(default_factory=list[Question])
+    warnings: list[str] = field(default_factory=list[str])
 
     @property
     def home_root(self) -> Path | None:
@@ -141,6 +154,26 @@ def context(
         # --answers: the install does not add the plugin on the user's behalf; they answer the
         # question in an interactive run (review T309 r1 F1).
         raw.setdefault("workdeck", False)
+    warnings: list[str] = []
+    reviewer = next((q for q in qs if q.id == "reviewer"), None)
+    # Only the saved answers file, and only a value an earlier version offered: an explicit
+    # --answers keeps normalize's refusal (review r11 F3).
+    if (
+        answers is None
+        and not answers_file
+        and reviewer is not None
+        and raw.get("reviewer") in LEGACY_REVIEWERS
+        and raw.get("reviewer") not in reviewer.choices
+    ):
+        # Saved by an earlier version that offered a reviewer this version does not implement
+        # (review r10 F2): the rerun takes the implemented one; an existing data directory's
+        # configuration is not changed by the install (§5 step 3).
+        warnings.append(
+            f"reviewer：答案中的评审器 {raw['reviewer']} 本版本没有实现，改用 {reviewer.default}；"
+            "已有数据目录的配置不改，需要时在主会话中让它把 roles.reviewer 改为 "
+            f"{reviewer.default}（要你的原话）"
+        )
+        raw["reviewer"] = reviewer.default
     normalized, problems = normalize(raw, qs) if (raw or require_answers) else ({}, [])
     if not raw and not require_answers:
         problems = []
@@ -166,6 +199,7 @@ def context(
         problems=problems,
         record=record,
         questions=qs,
+        warnings=warnings,
     )
 
 
@@ -246,6 +280,7 @@ def check(ctx: Context, *, with_questions: bool = False) -> dict[str, Any]:
         "shims": str(ctx.shims),
         "path_has_shims": winenv.has_entry(value, ctx.shims) if value is not None else False,
         "problems": problems,
+        "warnings": [*ctx.warnings, *[w for w in (reviewer_warning(ctx.env),) if w]],
         # Not "ok": check only reports, so a problem is not a failure of the command.
         "ready": not problems,
     }
@@ -702,6 +737,7 @@ def plan(ctx: Context) -> dict[str, Any]:
         "steps": steps,
         "todo": [s["step"] for s in steps if s.get("state") in ("todo", "blocked")],
         "problems": checked["problems"],
+        "warnings": checked["warnings"],
         "ok": checked["ready"],
         "next": "确认后运行 tsw setup install（终端入口与会话入口会先请你确认）"
         if checked["ready"]
@@ -736,7 +772,9 @@ def install(ctx: Context, *, open_browser: bool = True) -> dict[str, Any]:
         "verify": verification,
         "record": str(ctx.record.path),
         "next": RESTART.format(home=root),
+        "start_command": START_COMMAND,
         "demo_prompt": DEMO_PROMPT,
+        "warnings": checked["warnings"],
         "repositories": "要管理的仓库不在安装中配置：重启后在主会话中告诉它要管理哪些仓库，由主会话"
         "逐个加入配置（DN009 §6.1）",
     }

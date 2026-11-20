@@ -39,7 +39,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "${CLAUDE_PLUGIN_ROOT}/setup
 "<python>" -X utf8 "<checkout>/plugin/bin/tsw_launch.py" setup check --questions --git "<git>" --json
 ```
 
-- `problems` 中除 `home：…`（还没有数据目录位置）以外的问题先转告用户，解决后重新运行。
+- `problems` 中除 `home：…`（还没有数据目录位置）以外的问题先转告用户，解决后重新运行。`warnings` 也转告用户（例如没有 Codex：安装可以继续，但任务完成不了自评审，要先装好并登录 Codex）。
 - `questions` 是唯一的问题清单。`asked_by` 为 `entry` 的（产品检出）已在第 2 步问过，不再问。按顺序在对话中一项一项问，每项说明 `note` 与默认值：
   - `home`（数据目录位置）**必填，没有默认值**：用户没有给出时再问，不要替用户选一个路径。用户给出已有的数据目录时复用它。提问时说明：在数据目录（那个文件夹本身）中打开的会话是主会话，建议之后在数据目录中新建会话工作；本会话即使就在那个文件夹里也可以安装，安装结束时它会记为让出租约，不会自动领取（DN009 §15.1）。
   - `host` 只有一个选项时直接选定，不必问。
@@ -73,7 +73,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "${CLAUDE_PLUGIN_ROOT}/setup
 
 1. 完全退出并重新打开 Claude app：新的用户设置与插件在重新打开后才生效（试装实测），本会话不能替用户创建主会话；
 2. 在数据目录（答案中的 `home`）中新建一个会话，它是主会话；
-3. 在主会话中输入“开始示例任务”（`demo_prompt`），看 TaskSteward 怎样执行一个任务：主会话按 `tsw-demo` skill 登记一个示例任务，派发给 worker，最后引导用户在 Dashboard 中看报告并验收；可以跳过，之后随时说这句话。要管理的仓库也在主会话中告诉它，由它逐个加入配置。
+3. 在这个会话中输入 `/orchestrate`（`start_command`）开始主会话，以后每次开主会话都这样（换主会话时，旧主会话还持有调度租约，先在旧主会话中交接，见 orchestrate skill 的“交接主会话”）：新环境里主会话按 `tsw-demo` skill 先导览，并提议一个示例任务，看 TaskSteward 怎样执行一个任务、最后在 Dashboard 中看报告并验收；可以跳过，之后随时说“开始示例任务”（`demo_prompt`）。要管理的仓库也在主会话中告诉它，由它逐个加入配置。
 
 结果中有 `install_session` 时，告诉用户：本会话记为让出租约，之后不会自动成为编排的主会话。
 

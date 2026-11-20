@@ -76,7 +76,7 @@ def test_the_terminal_flow_asks_shows_the_plan_and_installs(tmp_path: Path) -> N
         "",  # the data directory is required: asked again
         str(home),
         "",  # language
-        "claude-headless",
+        "",  # reviewer: the one implemented reviewer
         "",  # human channels
         "否",  # no Dashboard service
         "",  # port
@@ -125,7 +125,8 @@ def test_a_session_bound_to_no_data_directory_may_install(tmp_path: Path) -> Non
     # session: it stands down (DN009 §15.1, the user's decision of 2026-11-20).
     assert out["install_session"]["session_id"] == "first-install"
     assert stood_down(tmp_path / "data", "first-install") == "setup"
-    assert "开始示例任务" in out["next"] and out["demo_prompt"] == "开始示例任务"
+    assert "/orchestrate" in out["next"] and out["start_command"] == "/orchestrate"
+    assert out["demo_prompt"] == "开始示例任务"
 
 
 @pytest.mark.use_case(GATE)
@@ -272,7 +273,7 @@ def test_setup_ps1_runs_the_interactive_install(tmp_path: Path) -> None:
         [str(claude.parent), str(Path(sys.executable).parent), env["PATH"]]
     )
     home = tmp_path / "data"
-    replies = [str(home), "", "claude-headless", "", "否", "", "", "是"]
+    replies = [str(home), "", "", "", "否", "", "", "是"]
     proc = powershell(product / "setup.ps1", "-NoBrowser", env=env, stdin="\n".join(replies) + "\n")
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert (home / "tsw-home.json").is_file()
@@ -336,7 +337,7 @@ def test_a_rerun_uses_the_saved_answers_and_manual_settings_are_shown(tmp_path: 
     product, claude = make_product(tmp_path), fake_claude(tmp_path)
     env = setup_env(tmp_path)
     home = tmp_path / "data"
-    replies = [str(home), "", "claude-headless", "", "否", "", "否", "是"]
+    replies = [str(home), "", "", "", "否", "", "否", "是"]
     launcher = product / "plugin" / "bin" / "tsw_launch.py"
     proc = subprocess.run(
         [
@@ -427,3 +428,53 @@ def test_an_install_session_in_the_data_directory_stands_down_even_after_a_failu
     with Ledger(open_home(home)).view() as conn:
         held = lease.lease_row(conn)
     assert held is None or held["holder_session"] != "in-place"
+
+
+@pytest.mark.use_case(UC)
+def test_saved_answers_with_an_unimplemented_reviewer_still_rerun(tmp_path: Path) -> None:
+    product, claude = make_product(tmp_path), fake_claude(tmp_path)
+    env = setup_env(tmp_path)
+    home = tmp_path / "data"
+    # An earlier version saved claude-headless when no codex was found.
+    state = Path(env["TSW_STATE_DIR"])
+    state.mkdir(parents=True, exist_ok=True)
+    saved = {
+        "home": str(home),
+        "language": "zh-CN",
+        "reviewer": "claude-headless",
+        "human_channels": "in-session",
+        "host": "claude-code",
+        "dashboard": False,
+        "dashboard_port": 47801,
+        "user_settings": True,
+    }
+    (state / "setup-answers.json").write_text(json.dumps(saved), encoding="utf-8")
+    # The bare rerun (update-plan's reinstall) takes the implemented reviewer and says so.
+    code, out, text = run_setup(
+        product, "install", "--claude", str(claude), "--no-browser", env=env
+    )
+    assert code == 0, text
+    assert any(w.startswith("reviewer：答案中的评审器 claude-headless") for w in out["warnings"])
+    # The interactive entry asks again instead of stopping before the questions.
+    (state / "setup-answers.json").write_text(json.dumps(saved), encoding="utf-8")
+    replies = ["", "", "", "", "否", "", "", "是"]
+    code, out, text = run_setup(
+        product,
+        "install",
+        "--interactive",
+        "--no-browser",
+        "--claude",
+        str(claude),
+        env=env,
+        stdin="\n".join(replies) + "\n",
+    )
+    assert code == 0, text
+    again = json.loads((state / "setup-answers.json").read_text("utf-8"))
+    assert again["reviewer"] == "codex-app-server" and again["home"] == str(home)
+    # An answers file given explicitly is checked as it is: the reviewer is refused.
+    explicit = tmp_path / "explicit.json"
+    explicit.write_text(json.dumps(saved), encoding="utf-8")
+    code, out, _ = run_setup(
+        product, "plan", "--answers", str(explicit), "--claude", str(claude), env=env
+    )
+    assert code == 3 and any(p.startswith("reviewer：") for p in out["problems"])

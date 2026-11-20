@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="tsw-source-sha256" content="e091bbbc5cd872c246b86cee9385b7a54b380d1c5554b5e68d34ee1534f71973">
+<meta name="tsw-source-sha256" content="1094230ea7b39c46259c7af8b1bc2a073d7b69f7d95fcabdafa1ea52fa13ce7b">
 <title>TaskSteward（任务管家）</title>
 <style>
 :root{--fg:#1f2430;--muted:#5b6475;--line:#d9dee8;--accent:#3b5bdb;--bg-soft:#f6f8fc;--code:#f3f4f8}
@@ -58,7 +58,7 @@ footer{margin-top:48px;color:var(--muted);font-size:12px;border-top:1px solid va
 <p>所有改动遵循 <a href="AGENTS.md">AGENTS.md</a>：开始前先读它，再按其中的表读对应的专题文档。</p>
 <table><thead><tr><th>文档</th><th>内容</th></tr></thead><tbody><tr><td><a href="docs/development/workflow.md">开发流程</a></td><td>从改代码到合并的每一步：门禁、证据、失败处理</td></tr><tr><td><a href="docs/development/testing-layers.md">测试层级</a></td><td>unit、component、surface、conformance、live 五个层级与 live 场景</td></tr><tr><td><a href="docs/development/test-environments.md">测试环境</a></td><td>临时数据目录、子进程环境隔离、live 运行清单与清理</td></tr><tr><td><a href="docs/development/use-cases.md">use-case 目录</a></td><td>use case 与状态迁移清单、测试标记、目录检查</td></tr><tr><td><a href="docs/development/ci.md">CI</a></td><td>GitHub Actions（Windows）、阶段与汇总检查 <code>Gate</code></td></tr><tr><td><a href="docs/development/review.md">评审与合并</a></td><td>独立评审、PR 模板、合并条件与需要用户确认的范围</td></tr><tr><td><a href="docs/development/code-quality.md">代码质量</a></td><td>警告即错误、只依赖标准库、开发依赖</td></tr><tr><td><a href="docs/development/compatibility.md">兼容性</a></td><td>账本、配置、插件接口等契约的版本规则</td></tr><tr><td><a href="docs/development/docs.md">文档</a></td><td>语言与格式、HTML 生成、设计文档、公开仓库卫生</td></tr><tr><td><a href="docs/development/release.md">发布</a></td><td>版本与发布（v1 开发期间不发布）</td></tr><tr><td><a href="docs/decisions/README.md">决定记录</a></td><td>已确认的决定</td></tr></tbody></table>
 <h2 id="开始使用开发中">开始使用（开发中）</h2>
-<p>前提：Windows、Python 3.10+、git、Claude Code（桌面 app 与 <code>claude</code> 命令行）。运行时只依赖标准库，不需要 pip。两条安装路径任选其一，各自在一处做完（<a href="docs/design/DN009-distribution-and-install.html">DN009</a>、<a href="docs/design/claude-code/CC009-install.html">CC009</a>）。</p>
+<p>前提：Windows、Python 3.10+、git、Claude Code（桌面 app 与 <code>claude</code> 命令行），以及用作 worker 自评审的 Codex 命令行（<code>codex</code>，已登录；本版本只实现了 Codex 评审器，没有它安装照常完成，但任务完成不了自评审）。运行时只依赖标准库，不需要 pip。两条安装路径任选其一，各自在一处做完（<a href="docs/design/DN009-distribution-and-install.html">DN009</a>、<a href="docs/design/claude-code/CC009-install.html">CC009</a>）。</p>
 <p><strong>在终端安装</strong>（PowerShell）：</p>
 <pre><code class="lang-powershell">git clone https://github.com/flyrobin620/task-steward.git &quot;$env:LOCALAPPDATA\TaskSteward\task-steward&quot;
 &amp; &quot;$env:LOCALAPPDATA\TaskSteward\task-steward\setup.ps1&quot;</code></pre>
@@ -67,7 +67,7 @@ footer{margin-top:48px;color:var(--muted);font-size:12px;border-top:1px solid va
 <pre><code class="lang-powershell">claude plugin marketplace add https://github.com/flyrobin620/task-steward.git
 claude plugin install task-steward@task-steward</code></pre>
 <p>然后打开 Claude app，在任意一个新会话中输入 <code>/task-steward:setup</code>。setup 在会话中提问（同样要求你给出数据目录位置）并做完。过程中 Claude 会请你批准几条命令（克隆仓库、写用户设置与 PATH、登记 Dashboard 计划任务等）。</p>
-<p><strong>装好之后</strong>：完全退出并重新打开 Claude app，在数据目录中新建一个会话（它是主会话），输入“开始示例任务”：主会话登记一个示例任务并派发给 worker，worker 写一份记录这个任务自己执行过程的报告（状态机、向你提问与超时转交、与评审器的互动、follow-up），最后引导你在 Dashboard 中看报告并验收。</p>
+<p><strong>装好之后</strong>：完全退出并重新打开 Claude app，在数据目录中新建一个会话，输入 <code>/orchestrate</code> 开始主会话（以后每次开主会话都这样；换主会话时先在旧主会话中交接调度租约，否则新会话只读）。新环境里主会话先给你导览，并提议一个示例任务（之后随时说“开始示例任务”）：主会话登记一个示例任务并派发给 worker，worker 写一份记录这个任务自己执行过程的报告（状态机、向你提问与超时转交、与评审器的互动、follow-up），最后引导你在 Dashboard 中看报告并验收。</p>
 <p>两条路径做的事相同（<code>tsw setup install</code>）：在 <code>%LOCALAPPDATA%\TaskSteward\bin</code> 放 <code>tsw</code> 垫片并加入用户级 PATH、把插件来源指向本机检出、建好数据目录与基础配置、在 Claude Code 用户设置中写入数据目录位置（<code>env.TSW_HOME</code>）、插件使用的解释器（<code>env.TSW_PYTHON</code>）与三条 auto 模式规则（先备份）、生成主会话的说明与 skill、按你的选择登记 Dashboard 常驻服务。安装记录在 <code>%LOCALAPPDATA%\TaskSteward\install.json</code>；重跑任一路径只做缺少或不一致的部分。要管理的仓库不在安装中配置：重启后在主会话中告诉它要管理哪些仓库，由主会话逐个加入配置。之后的更新在主会话中说“更新 tsw”。卸载用 <code>tsw setup uninstall</code>：它把安装脚本改动的东西恢复原样（Dashboard 服务、用户设置、<code>tsw</code> 垫片与 PATH；插件与市场回到安装前的状态，安装前就已装好的插件保留），数据目录与产品检出永远不删。要从干净的环境重装，再删除数据目录与 <code>%LOCALAPPDATA%\TaskSteward</code>，并在 app 退出时运行 <code>claude plugin uninstall task-steward@task-steward</code> 与 <code>claude plugin marketplace remove task-steward</code>。</p>
 <p>开发者也可以在本仓库中用可编辑安装代替垫片：<code>python -m pip install -e .</code>，再 <code>tsw init --home &lt;数据目录&gt; --remember</code>（把数据目录记在本仓库的 <code>.local/tsw-home</code>，终端不必设置 <code>TSW_HOME</code>）；插件与用户设置的安装步骤见 <code>tsw host install-hint</code>。</p>
 <h3 id="哪些命令在哪里运行">哪些命令在哪里运行</h3>

@@ -7,8 +7,8 @@ user's environment records its ownership in ``install.json`` before changing any
 
 The order: the machine-level items (interpreter and ``claude`` paths, the ``tsw`` shims, the user
 ``Path``), the plugin (``install_plugin``), the data directory, the user settings
-(``apply_user_settings``), ``host render``, the Dashboard service, then the install-phase
-``verify``.
+(``apply_user_settings``), ``host render``, the Dashboard service, the workdeck plugin (T309),
+then the install-phase ``verify``.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import webbrowser
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -39,7 +40,7 @@ from tsw.home import (
     record_render,
     remember_home,
 )
-from tsw.host import claude_install, dashboard_service
+from tsw.host import claude_install, dashboard_service, workdeck
 from tsw.host.claude_code import AUTO_MODE_RULES, render_instructions
 from tsw.host.plugin_copy import update as update_plugin
 from tsw.host.version import REPO_ROOT, head, render_record
@@ -55,7 +56,19 @@ from tsw.setup.record import (
 )
 from tsw.storage.fs import FsStorage, atomic_write
 
-STEPS = ("machine", "shim", "path", "plugin", "home", "user_settings", "render", "dashboard")
+STEPS = (
+    "machine",
+    "shim",
+    "path",
+    "plugin",
+    "home",
+    "user_settings",
+    "render",
+    "dashboard",
+    "workdeck",
+)
+# `workdeck plugin add` restarts the workdeck daemon and waits for it to connect (T309).
+WORKDECK_TIMEOUT_SECONDS = 180
 MIN_PYTHON = (3, 10)
 HANDSHAKE_TIMEOUT_SECONDS = 60
 MCP_PROTOCOL = "2025-06-18"
@@ -123,6 +136,11 @@ def context(
         raw = load_answers(Path(answers_file))
     elif answers_path(environ).is_file():
         raw = load_answers(answers_path(environ))
+    if answers is None and raw:
+        # An answers file written before the workdeck question (T309), saved or given with
+        # --answers: the install does not add the plugin on the user's behalf; they answer the
+        # question in an interactive run (review T309 r1 F1).
+        raw.setdefault("workdeck", False)
     normalized, problems = normalize(raw, qs) if (raw or require_answers) else ({}, [])
     if not raw and not require_answers:
         problems = []
@@ -500,6 +518,138 @@ def _dashboard(ctx: Context, apply: bool, *, open_browser: bool = True) -> dict[
     return result
 
 
+def _workdeck_command(env: Mapping[str, str]) -> str | None:
+    return shutil.which("workdeck", path=env.get("PATH"))
+
+
+def _run_workdeck(command: str, env: Mapping[str, str], *args: str) -> tuple[int, str]:
+    """Run ``workdeck <args>``: its exit code and output (the platform's, CC006 §13)."""
+    try:
+        proc = subprocess.run(
+            [command, *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=dict(env),
+            timeout=WORKDECK_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return 1, str(exc)
+    return proc.returncode, (proc.stdout + proc.stderr).strip()
+
+
+def _workdeck_entries(command: str, env: Mapping[str, str]) -> dict[str, str] | None:
+    """The configured plugins ``workdeck plugin list`` shows, id -> what it starts or reaches
+    (``<id>\\t<name>\\t<kind>\\t<upstream>`` lines), or None when the command fails."""
+    code, output = _run_workdeck(command, env, "plugin", "list")
+    if code != 0:
+        return None
+    found: dict[str, str] = {}
+    for line in output.splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 4:
+            found[parts[0].strip()] = parts[3].strip()
+    return found
+
+
+def _tail(output: str, lines: int = 8) -> list[str]:
+    return [line for line in output.splitlines() if line.strip()][-lines:]
+
+
+def _workdeck(ctx: Context, apply: bool) -> dict[str, Any]:
+    """Add the Dashboard to the local workdeck portal (DN009 §5 step 7, CC006 §13; T309).
+
+    Skipped when the recorded manifest is the one wanted now. workdeck refusing or failing is
+    reported with the command to run by hand; the other steps are not affected.
+    """
+    if not ctx.answers.get("workdeck"):
+        return {"state": "skipped", "note": "你选择了不接入 workdeck（或本机没有 workdeck 命令）"}
+    command = _workdeck_command(ctx.env)
+    if command is None:
+        return {"state": "skipped", "note": "找不到 workdeck 命令"}
+    root = ctx.home_root
+    if root is None:
+        return {"state": "todo", "note": "还没有给出数据目录位置"}
+    # The manifest needs only the data directory's path: the plan before the directory exists
+    # shows what will be started and replaced as well (PR #65 review).
+    value = workdeck.manifest(root, python=ctx.python, checkout=ctx.checkout)
+    wanted = workdeck.digest(value)
+    plugin_id = str(value["id"])
+    entry = ctx.record.step("workdeck")
+    if entry.get("added") and entry.get("digest") == wanted and not entry.get("failed_at"):
+        return {"state": "ok", "id": plugin_id}
+    entries = _workdeck_entries(command, ctx.env)
+    existed = None if entries is None else plugin_id in entries
+    starts = " ".join([value["spawn"]["command"], *value["spawn"]["args"]])
+    replacing = {
+        True: f"；替换 workdeck 中已有的插件 {plugin_id}",
+        None: "；读不到 workdeck 的插件列表",
+    }
+    result: dict[str, Any] = {
+        "state": "todo",
+        "id": plugin_id,
+        "starts": starts,
+        "replaces": existed,
+        "actions": [
+            f"workdeck plugin add <manifest> --replace（插件 {plugin_id} 启动：{starts}"
+            f"{replacing.get(existed, '')}）"
+        ],
+    }
+    if not apply:
+        return result
+    ctx.record.begin("workdeck", {"id": plugin_id, "existed_before": existed})
+    with tempfile.TemporaryDirectory(prefix="tsw-workdeck-") as folder:
+        path = Path(folder) / "tsw-workdeck-plugin.json"
+        path.write_text(workdeck.to_json(value), encoding="utf-8", newline="\n")
+        code, output = _run_workdeck(command, ctx.env, "plugin", "add", str(path), "--replace")
+    if code != 0:
+        # workdeck writes its configuration before it restarts the daemon (review T309 r1
+        # F2): an add that failed afterwards still left our entry, which uninstall must remove.
+        after = _workdeck_entries(command, ctx.env) or {}
+        ours = after.get(plugin_id) == workdeck.describe(value)
+        ctx.record.finish(
+            "workdeck",
+            added=ours or bool(entry.get("added")),
+            digest=wanted if ours else entry.get("digest"),
+            failed_at=utc_now(),
+        )
+        result.update(
+            state="failed",
+            problem=f"workdeck plugin add 失败（退出码 {code}）",
+            output=_tail(output),
+            manual="修正原因后重跑 tsw setup install；或在终端运行 tsw dashboard "
+            "workdeck-manifest --out <文件>，再 workdeck plugin add <文件> --replace",
+        )
+        return result
+    if (
+        entry.get("failed_at")
+        and "unchanged" in output
+        and not _workdeck_running(command, ctx.env, plugin_id)
+    ):
+        # The entry was written before the restart failed; workdeck does not restart for an
+        # unchanged entry, so the plugin still is not running (review T309 r2 F3).
+        ctx.record.finish("workdeck", added=True, digest=wanted, failed_at=utc_now())
+        result.update(
+            state="failed",
+            problem="workdeck 的配置中已有这个插件，但 workdeck daemon 没有在运行它"
+            "（上次重启失败）",
+            output=_tail(output),
+            manual="重启 workdeck daemon（workdeck setup verify 查看原因）后重跑 tsw setup install",
+        )
+        return result
+    ctx.record.finish("workdeck", added=True, digest=wanted, failed_at=None)
+    result.update(state="done", output=_tail(output))
+    return result
+
+
+def _workdeck_running(command: str, env: Mapping[str, str], plugin_id: str) -> bool:
+    """Whether ``workdeck plugin list`` says the daemon runs the plugin: ``running: <id> ready``."""
+    code, output = _run_workdeck(command, env, "plugin", "list")
+    return code == 0 and f"running: {plugin_id} ready" in output.splitlines()
+
+
 def _port(home: Home) -> int:
     config = load_config(home)
     if not config.valid:
@@ -522,6 +672,8 @@ def _run_step(ctx: Context, name: str, apply: bool, *, open_browser: bool = True
     try:
         if name == "dashboard":
             outcome = _dashboard(ctx, apply, open_browser=open_browser)
+        elif name == "workdeck":
+            outcome = _workdeck(ctx, apply)
         else:
             outcome = STEP_FUNCTIONS[name](ctx, apply)
     except TswError as exc:
@@ -752,6 +904,18 @@ def verify(
                     {k: status.get(k) for k in ("installed", "running", "url")},
                 )
             )
+        wired = ctx.record.step("workdeck")
+        if wired.get("added") or wired.get("failed_at"):
+            current = workdeck.digest(workdeck.manifest(root, python=python, checkout=ctx.checkout))
+            checks.append(
+                _check(
+                    "workdeck",
+                    bool(wired.get("added"))
+                    and wired.get("digest") == current
+                    and not wired.get("failed_at"),
+                    {"id": wired.get("id"), "recorded": wired.get("digest"), "current": current},
+                )
+            )
         checks.append(_check("runtime_handshake", **_handshake_check(python, ctx, root)))
     on_path = shutil.which("tsw", path=ctx.env.get("PATH"))
     effective = on_path is not None and _inside(Path(on_path), ctx.shims)
@@ -837,6 +1001,9 @@ def uninstall(ctx: Context) -> dict[str, Any]:
     if ours and root and (root / MARKER).is_file():
         done["dashboard"] = dashboard_service.uninstall(open_home(root), ctx.env)
         ctx.record.finish("dashboard", installed=False)
+    wired = ctx.record.step("workdeck")
+    if wired.get("added") or wired.get("state") == "started":
+        done["workdeck"] = _remove_workdeck(ctx, wired)
     plugin = ctx.record.step("plugin")
     if not plugin:
         done["plugin"] = {"ok": True, "note": "安装没有动过插件，保留"}
@@ -880,6 +1047,44 @@ def uninstall(ctx: Context) -> dict[str, Any]:
     }
 
 
+def _remove_workdeck(ctx: Context, wired: Mapping[str, Any]) -> dict[str, Any]:
+    """``workdeck plugin remove <id>`` for the entry the install added (DN009 §10); an entry it
+    replaced is not brought back (it is in workdeck's backup). Removed only while workdeck still
+    has our entry: an entry the user changed since is kept, and an add interrupted after
+    workdeck wrote it is removed too. A failure is reported, not fatal."""
+    plugin_id = str(wired.get("id") or workdeck.DEFAULT_ID)
+    command = _workdeck_command(ctx.env)
+    if command is None:
+        return {"ok": False, "note": f"找不到 workdeck 命令，插件 {plugin_id} 没有移除"}
+    entries = _workdeck_entries(command, ctx.env)
+    root = ctx.home_root
+    if entries is None or root is None:
+        # Without the list there is nothing to tell our entry from one the user put there
+        # since: keep it and the record, and say how to finish (review T309 r2 F4).
+        return {
+            "ok": False,
+            "id": plugin_id,
+            "note": "读不到 workdeck 的插件列表，插件没有移除；确认它仍是安装加入的那一项后运行 "
+            f"workdeck plugin remove {plugin_id}",
+        }
+    python = str(ctx.record.get("python") or ctx.python)
+    mine = workdeck.describe(workdeck.manifest(root, python=python, checkout=ctx.checkout))
+    if plugin_id not in entries:
+        ctx.record.finish("workdeck", added=False)
+        return {"ok": True, "id": plugin_id, "note": "workdeck 中已没有这个插件"}
+    if entries[plugin_id] != mine:
+        ctx.record.finish("workdeck", added=False)
+        return {
+            "ok": True,
+            "id": plugin_id,
+            "note": "workdeck 中的这个插件已不是安装加入的那一项，保留",
+        }
+    code, output = _run_workdeck(command, ctx.env, "plugin", "remove", plugin_id)
+    if code == 0:
+        ctx.record.finish("workdeck", added=False)
+    return {"ok": code == 0, "id": plugin_id, "output": _tail(output)}
+
+
 def manual_steps(home_text: str) -> list[str]:
     """The steps a manual install takes, the same as ``install``'s (``host install-hint``)."""
     return [
@@ -898,7 +1103,9 @@ def manual_steps(home_text: str) -> list[str]:
         "5. tsw host render：生成数据目录的 CLAUDE.md、skill、worker 说明 roles/worker.md 与设置，"
         "并更新插件副本",
         "6. 可选：tsw dashboard install，再 tsw dashboard open",
-        f"7. 重启 Claude app，在数据目录 {home_text} 中打开一个会话作为主会话",
+        "7. 可选（本机有 workdeck 时）：workdeck plugin add http://127.0.0.1:<Dashboard 端口>/，"
+        "或 tsw dashboard workdeck-manifest --out <文件> 后 workdeck plugin add <文件>",
+        f"8. 重启 Claude app，在数据目录 {home_text} 中打开一个会话作为主会话",
     ]
 
 

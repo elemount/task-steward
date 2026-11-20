@@ -1,6 +1,6 @@
 # CC009 Claude Code 上的安装
 
-- 状态：已确认（T305；用户 2026-11-19 确认；同日决定数据目录必填、setup 不配置仓库，DN009 §6）
+- 状态：已确认（T305；用户 2026-11-19 确认；同日决定数据目录必填、setup 不配置仓库，DN009 §6）；T308 实现，§5 增加插件使用的解释器 `env.TSW_PYTHON`，§9 记录 live 结论
 - 日期：2026-11-19
 - 实现：[DN009 分发与安装](../DN009-distribution-and-install.md)
 - 相关：[CC006 Claude Code 插件](CC006-plugins.md) · [CC008 Claude Code 上的护栏](CC008-guardrails.md)
@@ -62,8 +62,9 @@ setup 在会话中提问（同样要求用户给出数据目录位置）并做�
 ## 5. 用户设置与 auto 模式规则（`apply_user_settings`）
 
 - 文件：用户设置 `~/.claude/settings.json`（设置了 `CLAUDE_CONFIG_DIR` 时用其中的 `settings.json`）。
-- 写入：`env.TSW_HOME`（会话从这里得到数据目录，DN006 §9.1）与 `autoMode.allow` 中 install hint 的三条规则（TaskSteward Worker Dispatch、Worker Merge、Routine；CC008 §6），按规则开头的名称识别并替换旧文本；先备份为带时间的副本。
-- 移除（`remove`）：删除自己加入的 `env.TSW_HOME`（值仍等于安装时写入的值才删）与这三条规则，先备份。
+- 写入：`env.TSW_HOME`（会话从这里得到数据目录，DN006 §9.1）、`env.TSW_PYTHON`（插件的 MCP server 与 hooks 使用的解释器，见下）与 `autoMode.allow` 中 install hint 的三条规则（TaskSteward Worker Dispatch、Worker Merge、Routine；CC008 §6），按规则开头的名称识别并替换旧文本；先备份为带时间的副本（`%LOCALAPPDATA%\TaskSteward\backups\`，路径记进 `install.json`）。写之前在 `install.json` 记下这两个键原来的值与原来已有的规则名。
+- 移除（`remove`）：仍等于安装时写入的值的 env 键恢复为原来的值（原来没有就删除），之后被用户改过的不动；删除安装时加入的规则，安装前就有的同名规则保留（文本已是新的）；先备份。
+- 解释器可配置（DN009 §12）：插件的 `.mcp.json` 与 hooks 用 `${TSW_PYTHON:-python}` 运行启动器，没有设置时仍是 PATH 中的 `python`。Claude Code 在 `.mcp.json` 中展开 `${VAR:-default}`，hooks 的命令在 Windows 上由 Git Bash 运行（文档）；T308 实测两处都按 `TSW_PYTHON` 运行指定的解释器、未设置时回落到 `python`（Claude Code 2.1.302，`--plugin-dir` 加载的探针插件）。安装脚本把它设为找到的解释器的完整路径：新装的 Python 不在桌面 app 进程的 PATH 中时插件也能启动。
 - Claude Code 自动重新载入设置文件（CC006 §11.1）。
 
 ## 6. 会话中的例外（DN009 §8）
@@ -94,9 +95,19 @@ setup 在会话中提问（同样要求用户给出数据目录位置）并做�
 - Dashboard 常驻服务：复用 `tsw dashboard install`（CC006 §12）。
 - 实测环境注意：在数据目录之下用独立的 `CLAUDE_CONFIG_DIR` 添加 GitHub 市场，Claude Code 最后一步的目录重命名会以 `EPERM` 失败（同一操作在 `%TEMP%` 下成功）；live 场景的临时配置放在 `%TEMP%` 下。
 
-## 9. 待验证（live）
+## 9. 待验证（live）与 T308 的结论
 
-- 桌面 app 会话中 `/plugin install task-steward --marketplace …` 的写法，以及是否必须 `/reload-plugins`；
-- auto 模式下 `tsw setup install` 写用户设置、登记计划任务时的批准提示；
-- Claude app 的 Terminal 面板中运行的命令是否带 `CLAUDECODE`（若不带，setup skill 也可以把 `install` 交给 Terminal 面板，由用户批准运行）；
-- 两条路径在干净的 `CLAUDE_CONFIG_DIR` 与临时 HOME 中各从零走到主会话可用。
+T308 在本机（Windows 11，Claude Code 2.1.302）用 live 场景 `setup-e2e`（`python tools/live.py setup-e2e run --path terminal|session`）验证：每次运行有自己的 `HOME`、`LOCALAPPDATA` 与 `CLAUDE_CONFIG_DIR`（在 `%TEMP%` 下），真实的 PowerShell、Python、git、`claude` 插件命令（不调用模型）与 HKCU 用户级 PATH（运行后核对恢复原值）。
+
+| 待验证项 | 结论 |
+| --- | --- |
+| 两条路径在干净的 `CLAUDE_CONFIG_DIR` 与临时 HOME 中各从零走到主会话可用 | 本机在宿主命令行、MCP 与 hooks 层面通过；真实 app 会话未验证（见下）：终端路径经 `setup.ps1` 交互；会话路径从插件市场一步安装（`--marketplace <URL>#<分支>` 也可用）、探测、取检出、问题清单、计划与安装（带会话标记 `CLAUDECODE` 与新的会话 ID，属模拟）。两条路径之后都核对：市场改指检出、副本为检出 HEAD；`claude mcp list` 显示插件的 tsw MCP server 已连接（`TSW_PYTHON`、`TSW_HOME` 来自用户设置）；插件副本的 SessionStart hook 命令在 Git Bash 中运行并给主会话注入；按宿主的方式（`TSW_PYTHON`、会话 ID、数据目录为会话目录）启动插件副本的 MCP server，`whoami` 的角色为 orchestrator、`runtime.commit` 为检出 HEAD；新进程中 `tsw` 解析到垫片（cmd 与 Git Bash），`verify --after-reload` 通过；`tsw setup uninstall` 恢复 PATH 原值、移除插件与用户设置、保留数据目录。真实 app 中打开的主会话、重启后 app 中 Bash 的 PATH、批准提示与 Dashboard 常驻服务没有在本机验证（app 不能使用隔离的配置目录），由用户在另一台机器上试装验证 |
+| Claude app 的 Terminal 面板中运行的命令是否带 `CLAUDECODE` | 不带（实测：Terminal 面板的 PowerShell 中没有 `CLAUDECODE` 与 `CLAUDE_CODE_HOST_SESSION_ID`）：在那里运行的 `tsw` 是会话外的终端。setup skill 仍在会话的 Bash 中运行安装（§6 已放行），不需要换到 Terminal 面板 |
+| 插件的 `.mcp.json` 与 hooks 中 `${TSW_PYTHON:-python}` | 两处都按 `TSW_PYTHON` 运行指定的解释器，未设置时回落到 `python`（`--plugin-dir` 加载的探针插件，§5） |
+| 桌面 app 会话中 `/plugin install task-steward --marketplace …` 的写法，以及是否必须 `/reload-plugins` | 待用户试装（CLI 的同一写法已通过） |
+| auto 模式下 `tsw setup install` 写用户设置、登记计划任务时的批准提示 | 待用户试装 |
+
+live 中另外发现并已处理：
+
+- 开发者机器上 pip 可编辑安装的 `tsw.exe`（Python 的 `Scripts`）在 PATH 中排在垫片之前时，`tsw` 不是垫片；`verify --after-reload` 的 `path_effective` 报告失败并写明原因（删除另一个 `tsw`，或把垫片目录移前）。没有产品检出的用户不受影响。
+- `tsw setup uninstall` 经 `tsw.cmd` 运行时，cmd 在命令结束后还会再读这个文件：卸载时立刻删除它会以 “The system cannot find the path specified” 与退出码 1 结束。垫片设置 `TSW_SHIM`，卸载把正在运行的 `tsw.cmd` 交给一个分离的 cmd 稍后删除（也跳出调用者的作业对象）。

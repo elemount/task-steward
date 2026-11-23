@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from tests.support import REPO_ROOT
 from tsw.errors import TswError
+from tsw.host import transcript
 from tsw.machine import guards
 from tsw.machine.ask_user import AUTOMATED_PREFIXES, is_automated
 
@@ -116,3 +119,122 @@ def test_plain_words_from_the_user_or_workdeck_are_recorded(prompt: str) -> None
 
 def test_no_marker_names_workdeck() -> None:
     assert not any("workdeck" in prefix.lower() for prefix in AUTOMATED_PREFIXES)
+
+
+# --- T338: the turn's source in the host's transcript (CC001 §6.1) ---------------------------
+
+
+def _line(prompt_id: str, origin: dict[str, Any] | None, content: Any = "words") -> bytes:
+    entry: dict[str, Any] = {"type": "user", "promptId": prompt_id, "message": {"content": content}}
+    if origin is not None:
+        entry["origin"] = origin
+    return (json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+WORKDECK_ORIGIN = {"kind": "peer", "from": "workdeck", "verifiedLocal": True}
+PEER = {"kind": "peer", "from": "local_8c4ffa9b", "name": "T002", "hostInjected": True}
+
+
+def test_the_turns_origin_is_found_by_its_prompt_id(tmp_path: Path) -> None:
+    path = tmp_path / "t.jsonl"
+    path.write_bytes(
+        _line("p-1", {"kind": "human"})
+        + b'{"type":"queue-operation","operation":"enqueue","content":"p-2"}\n'
+        + _line("p-2", WORKDECK_ORIGIN, "用 A")
+        + b"not json p-2\n"
+        + _line("p-2", None, [{"type": "tool_result"}])  # the turn's tool results: no origin
+        + b'{"type":"assistant","promptId":"p-2"}\n'
+        + _line("p-3", PEER)
+    )
+    found = transcript.prompt_origin(str(path), "p-2")
+    assert found == WORKDECK_ORIGIN and transcript.via(found) == "workdeck"
+    assert transcript.via(transcript.prompt_origin(str(path), "p-1")) is None
+    assert transcript.via(transcript.prompt_origin(str(path), "p-3")) is None
+    for missing in ("p-9", "", None, 7):
+        assert transcript.prompt_origin(str(path), missing) is None
+    for bad_path in (None, "", str(tmp_path / "missing.jsonl"), str(tmp_path)):
+        assert transcript.prompt_origin(bad_path, "p-2") is None
+
+
+def test_the_search_reads_across_chunks_and_stops_at_its_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(transcript, "CHUNK", 7)  # every line is cut between chunks
+    path = tmp_path / "t.jsonl"
+    filler = b"".join(_line(f"f-{i}", {"kind": "human"}) for i in range(20))
+    path.write_bytes(_line("p-1", WORKDECK_ORIGIN) + filler + _line("p-2", WORKDECK_ORIGIN))
+    assert transcript.prompt_origin(str(path), "p-2") == WORKDECK_ORIGIN
+    assert transcript.prompt_origin(str(path), "p-1") == WORKDECK_ORIGIN  # the first line
+    # An entry further back than the limit is not looked for; neither is one cut by it.
+    size = path.stat().st_size
+    assert transcript.prompt_origin(str(path), "p-1", limit=size - 1) is None
+    assert transcript.prompt_origin(str(path), "p-1", limit=size) == WORKDECK_ORIGIN
+    # No trailing newline: the last line is still read.
+    path.write_bytes(filler + _line("p-3", WORKDECK_ORIGIN).rstrip(b"\n"))
+    assert transcript.prompt_origin(str(path), "p-3") == WORKDECK_ORIGIN
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        {"kind": "human"},
+        PEER,
+        {"kind": "peer", "from": "Workdeck"},
+        {"kind": "human", "from": "workdeck"},
+        {"from": "workdeck"},
+        None,
+    ],
+)
+def test_only_the_hosts_workdeck_origin_counts(origin: dict[str, Any] | None) -> None:
+    assert transcript.via(origin) is None
+
+
+def _queued(text: str, origin: dict[str, Any]) -> bytes:
+    attachment = {"type": "queued_command", "prompt": text, "origin": origin, "isMeta": True}
+    return (json.dumps({"type": "attachment", "attachment": attachment}) + "\n").encode("utf-8")
+
+
+def test_the_turns_prompts_are_paired_with_its_entries_in_order(tmp_path: Path) -> None:
+    """The turn's first prompt is its user entry; later ones (injected while it ran, T334) are
+    queued_command attachments after it, one each, in order (review r3 F2)."""
+    path = tmp_path / "t.jsonl"
+    typed = [
+        {"type": "text", "text": "<system-reminder>\nLinked sessions now\n</system-reminder>"},
+        {"type": "text", "text": "继续"},
+    ]
+    path.write_bytes(
+        _queued("继续", WORKDECK_ORIGIN)  # an earlier turn's: never this one's
+        + _line("p-0", WORKDECK_ORIGIN, "Another Claude session sent a message:\n继续\n\nThis")
+        + _line("p-1", {"kind": "human"}, typed)
+        + _queued('<cross-session-message from="local_1">done</cross-session-message>', PEER)
+        + _queued("继续", WORKDECK_ORIGIN)
+        + _line("p-1", None, [{"type": "tool_result"}])
+        + _queued("也要 B", WORKDECK_ORIGIN)
+    )
+    human = {"kind": "human"}
+    injected = '<cross-session-message from="local_1">done</cross-session-message>'
+    prompts = ["<system-reminder>\nx\n</system-reminder>\n继续", injected, "继续", "也要 B"]
+    assert transcript.turn_origins(str(path), "p-1", prompts) == [
+        human,
+        PEER,
+        WORKDECK_ORIGIN,
+        WORKDECK_ORIGIN,
+    ]
+    # The same words twice in one turn take one attachment each; a third has none left.
+    assert transcript.turn_origins(str(path), "p-1", ["继续", "继续", "继续"]) == [
+        human,
+        WORKDECK_ORIGIN,
+        None,
+    ]
+    # The first prompt must be the start entry's words; others need an attachment of their own.
+    assert transcript.turn_origins(str(path), "p-1", ["别的话", "也要 C"]) == [None, None]
+    assert transcript.turn_origins(str(path), "p-0", ["继续"]) == [WORKDECK_ORIGIN]
+    # Without the turn's start entry nothing is known.
+    for turn_id in ("p-9", None, ""):
+        assert transcript.turn_origins(str(path), turn_id, ["继续", "也要 B"]) == [None, None]
+    assert transcript.turn_origins(str(tmp_path / "none.jsonl"), "p-1", ["继续"]) == [None]
+    assert transcript.turn_origins(str(path), "p-1", []) == []
+    size = path.stat().st_size
+    tail = len(_queued("也要 B", WORKDECK_ORIGIN)) + 10
+    assert transcript.turn_origins(str(path), "p-1", ["继续"], limit=tail) == [None]
+    assert transcript.turn_origins(str(path), "p-1", ["继续"], limit=size) == [human]

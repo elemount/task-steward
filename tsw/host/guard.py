@@ -17,7 +17,7 @@ import sqlite3
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from tsw import lease
 from tsw.commands import Command, CommitContext
@@ -36,10 +36,18 @@ from tsw.host.identity import (
     within,
 )
 from tsw.host.plugin_copy import session_hint
+from tsw.host.transcript import prompt_origin, turn_origins
+from tsw.host.transcript import via as origin_via
 from tsw.ledger import Ledger
 from tsw.machine import routine as routine_mod
 from tsw.machine import session_titles as session_titles_mod
-from tsw.machine.ask_user import handoff_due, is_automated, session_message
+from tsw.machine.ask_user import (
+    handoff_due,
+    is_automated,
+    session_message,
+    session_message_via,
+    user_words,
+)
 from tsw.machine.guards import merge_authorized
 from tsw.machine.model import row_dict
 from tsw.roles import RENDERED_DIR, WORKER, reread_notice
@@ -56,10 +64,13 @@ SESSION_ACTIONS = {"title": "改标题", "archive": "归档"}  # DN002 §5.8
 # The host's session-scheduling tools, and the tag every scheduled prompt of a session carries.
 SCHEDULERS = ("CronCreate", "ScheduleWakeup")
 SCHEDULED_TAG = "<scheduled-task"
-# Under the data directory's cache/: whether each orchestrator session's current turn is the user's.
+# Under the data directory's cache/: what UserPromptSubmit saw of each session's current turn
+# (the orchestrator's: whether it is the user's; a worker's: the message it recorded), with the
+# turn's ``prompt_id``, so Stop can read where the turn's message came from (CC001 §6.1).
 TURNS_DIR = "turns"
-# The hook cannot tell a turn begun by a message the user sent through workdeck (plain text, no
-# marker) from one the user typed in the app; only the latter may create sessions (CC001 §6.1).
+# When Stop cannot read the turn's source from the transcript, a turn begun by a message the user
+# sent through workdeck looks like one the user typed in the app; only the latter may create
+# sessions (CC001 §6.1).
 WORKDECK_TURN = (
     "这一轮若由 workdeck 发来的消息开始（没有 <cross-session-message> 包装的会话间消息），"
     "宿主不允许创建会话：不要调用 start_session，说明原因后直接结束，"
@@ -794,12 +805,16 @@ class Guard:
     def on_UserPromptSubmit(self, who: Identity) -> dict[str, Any] | None:
         prompt = str(self.payload.get("prompt") or "")
         if who.role == "orchestrator":
-            self._mark_turn(who, user=not is_automated(prompt))
+            self._mark_turn(who, {"user_turn": not is_automated(prompt)})
             return None
         if who.role != "worker":
             return None
         notes: list[str] = []
         recorded = self._record_answer(who, prompt) if self.config.valid else None
+        # Where the message came from can be read only at Stop (CC001 §6.1). Every prompt of
+        # the turn is noted, recorded or not, so Stop can pair them with the turn's entries in
+        # order; a message injected while the turn runs (T334) joins the earlier ones.
+        self._note_prompt(who, prompt, recorded)
         if recorded is not None and recorded.get("request_id"):
             notes.append(
                 f"这条用户消息已记录为 {recorded['message_id']}（问题 {recorded['request_id']}）。"
@@ -866,8 +881,10 @@ class Guard:
         task_id, session_id = who.task_id, who.session_id
         out: dict[str, Any] = {}
 
+        prompt_id = self._prompt_id()
+
         def build(ctx: CommitContext) -> list[EventDraft]:
-            draft = session_message(ctx.conn, task_id, session_id, prompt)
+            draft = session_message(ctx.conn, task_id, session_id, prompt, prompt_id=prompt_id)
             if draft is not None:
                 out.update(draft.data)
             return [] if draft is None else [draft]
@@ -888,7 +905,8 @@ class Guard:
     def on_Stop(self, who: Identity) -> dict[str, Any] | None:
         again = bool(self.payload.get("stop_hook_active"))
         if who.role == "orchestrator":
-            user_turn = self._take_turn(who)
+            turn = self._take_turn(who)
+            user_turn = bool(turn.get("user_turn"))
             if again or not self.config.valid:
                 return None
             reasons: list[str] = []
@@ -913,6 +931,10 @@ class Guard:
                     else []
                 )
             state = routine[0]["state"] if routine else None
+            if (prestart or (state == "missing" and user_turn)) and self._via(turn) is not None:
+                # A turn begun by a message the user sent through workdeck: the host lets no
+                # session be created in it, so there is nothing to remind of (CC001 §6.1, T338).
+                user_turn, prestart = False, []
             if pending and may_dispatch:
                 reasons.append(
                     f"还有 {len(pending)} 条未处理的回传，先调用 inbox 处理并 inbox_ack。"
@@ -985,6 +1007,7 @@ class Guard:
                 self.ledger.commit(_turn_ended(who))
             except Exception as exc:  # observation only; never block on it
                 print(f"tsw guard: turn_ended not recorded: {exc}", file=sys.stderr)
+            self._record_via(who)
         if row is not None and row["substate"] == "reviewing" and not again:
             return {
                 "decision": "block",
@@ -997,28 +1020,135 @@ class Guard:
         name = re.sub(r"[^A-Za-z0-9_.-]", "_", str(who.session_id or "none"))
         return self.home.cache_dir / TURNS_DIR / f"{name}.json"
 
-    def _mark_turn(self, who: Identity, *, user: bool) -> None:
-        """Remember whether the orchestrator's current turn is the user's own (``UserPromptSubmit``
-        sees every turn's prompt; the ``Stop`` hook does not). A cache file, not a ledger event:
-        it only steers the reminder at the end of this turn."""
+    def _prompt_id(self) -> str | None:
+        value = self.payload.get("prompt_id")
+        return value if isinstance(value, str) and value else None
+
+    def _mark_turn(self, who: Identity, mark: Mapping[str, Any]) -> None:
+        """Remember what ``UserPromptSubmit`` saw of the current turn (``Stop`` does not see the
+        prompt): for the orchestrator whether it is the user's own, for a worker the message it
+        recorded; both with the turn's ``prompt_id``. A cache file, not a ledger event: it only
+        steers what the end of this turn does."""
         path = self._turn_file(who)
+        data = {**mark, "prompt_id": self._prompt_id(), "at": utc_now()}
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write(path, json.dumps({"user_turn": user, "at": utc_now()}).encode("utf-8"))
-        except OSError as exc:  # a missed mark only skips a reminder
+            atomic_write(path, json.dumps(data).encode("utf-8"))
+        except OSError as exc:  # a missed mark only skips a reminder or a note
             print(f"tsw guard: turn not recorded: {exc}", file=sys.stderr)
 
-    def _take_turn(self, who: Identity) -> bool:
-        """Whether the turn that is ending was the user's; the mark is used up either way, so a
-        later turn the hook did not see (no ``UserPromptSubmit``) never counts as the user's."""
+    def _note_prompt(self, who: Identity, prompt: str, recorded: Mapping[str, Any] | None) -> None:
+        """Add a prompt the worker's hook saw to the turn's mark, with the message it recorded
+        (None for an injected one it did not record), for Stop to look up in order."""
         path = self._turn_file(who)
         try:
-            user = bool(json.loads(path.read_text(encoding="utf-8")).get("user_turn"))
-        except (OSError, ValueError, AttributeError):
-            return False
+            mark: Any = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            mark = None
+        kept = cast("dict[str, Any]", mark) if isinstance(mark, dict) else {}
+        earlier: Any = kept.get("prompts")
+        seen = cast("list[Any]", earlier) if isinstance(earlier, list) else []
+        note = {
+            "prompt": user_words(prompt),
+            "message_id": recorded["message_id"] if recorded else None,
+            "prompt_id": self._prompt_id(),
+        }
+        # ``turn`` and ``upto``: what the last Stop read (see _record_via).
+        last = {k: kept[k] for k in ("turn", "upto") if k in kept}
+        self._mark_turn(who, {**last, "prompts": [*seen, note]})
+
+    def _take_turn(self, who: Identity) -> dict[str, Any]:
+        """What was marked for the turn that is ending (empty when nothing was); the mark is used
+        up either way, so a later turn the hook did not see (no ``UserPromptSubmit``) never
+        counts as the user's or gets another turn's message."""
+        path = self._turn_file(who)
+        try:
+            mark: Any = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
         with contextlib.suppress(OSError):
             path.unlink()
-        return user
+        return cast("dict[str, Any]", mark) if isinstance(mark, dict) else {}
+
+    def _via(self, turn: Mapping[str, Any]) -> str | None:
+        """``workdeck`` when the host recorded the message that started the turn ending now as
+        sent through workdeck, read from the transcript at Stop, once the entry is written
+        (CC001 §6.1). Messages injected later in the turn do not change who started it."""
+        try:
+            prompt_id = self._prompt_id() or turn.get("prompt_id")
+            return origin_via(prompt_origin(self.payload.get("transcript_path"), prompt_id))
+        except Exception:  # a note only; never block the end of the turn
+            return None
+
+    def _record_via(self, who: Identity) -> None:
+        """Messages recorded in the turn ending now that came through workdeck: say so
+        (``input.session_message_via``, DN006 §8.11).
+
+        The turn is Stop's ``prompt_id``. The mark keeps the prompts the hook saw, in order, and
+        stays after Stop: a Stop that is blocked continues the same turn, and messages injected
+        after it still pair with that turn's entries (review r4 F4). The next turn's Stop drops
+        the prompts an earlier turn's Stop already read (``upto`` of ``turn``).
+        """
+        path = self._turn_file(who)
+        try:
+            mark: Any = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        turn_id = self._prompt_id()
+        listed: Any = mark.get("prompts") if isinstance(mark, dict) else None
+        if not isinstance(listed, list) or turn_id is None or not who.task_id:
+            with contextlib.suppress(OSError):
+                path.unlink()
+            return
+        kept = cast("dict[str, Any]", mark)
+        seen = [cast("dict[str, Any]", n) for n in cast("list[Any]", listed) if isinstance(n, dict)]
+        upto = kept.get("upto")
+        if kept.get("turn") != turn_id and isinstance(upto, int) and upto > 0:
+            seen = seen[upto:]  # an earlier turn's, already read at its Stop
+        # The prompt that began this turn carries its prompt_id; any before it are left by a turn
+        # that never reached Stop and are not this turn's (review r5 F5).
+        while seen and seen[0].get("prompt_id") != turn_id:
+            seen = seen[1:]
+        self._mark_turn(who, {"turn": turn_id, "upto": len(seen), "prompts": seen})
+        if not seen:
+            return
+        task_id = who.task_id
+        try:
+            origins = turn_origins(
+                self.payload.get("transcript_path"),
+                turn_id,
+                [str(n.get("prompt") or "") for n in seen],
+            )
+        except Exception:  # a note only; never block the end of the turn
+            return
+        notes: list[tuple[str, str, str | None]] = []
+        for note, origin in zip(seen, origins, strict=True):
+            message_id, channel = note.get("message_id"), origin_via(origin)
+            if isinstance(message_id, str) and message_id and channel is not None:
+                prompt_id = note.get("prompt_id")
+                notes.append(
+                    (message_id, channel, prompt_id if isinstance(prompt_id, str) else None)
+                )
+        if not notes:
+            return
+
+        def build(ctx: CommitContext) -> list[EventDraft]:
+            drafts = [
+                session_message_via(ctx.conn, task_id, message_id, channel, prompt_id)
+                for message_id, channel, prompt_id in notes
+            ]
+            return [d for d in drafts if d is not None]
+
+        try:
+            self.ledger.commit(
+                Command(
+                    actor={"role": "user", "session_id": who.session_id, "via": "Stop"},
+                    input={"op": "session_message_via", "messages": [n[0] for n in notes]},
+                    build=build,
+                )
+            )
+        except Exception as exc:  # a note only; never block on it
+            print(f"tsw guard: message source not recorded: {exc}", file=sys.stderr)
 
     def _may_dispatch(self, conn: sqlite3.Connection, who: Identity) -> bool:
         """No other session holds a valid scheduling lease (G-LEASE would refuse a prestart),

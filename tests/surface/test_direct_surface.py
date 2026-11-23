@@ -666,3 +666,103 @@ def test_the_dashboard_labels_an_embedding_portals_sessions(h: Harness, dashboar
     assert status == 200 and list(json.loads(raw)["labels"]) == ["orch-1"]
     # The link is the task view's address in the app.
     assert dashboard.request("GET", "/tasks/T001")[0] == 200
+
+
+@mark.use_case("UC-DIRECT-010")
+def test_the_dashboard_serves_registered_work_outputs_only(h: Harness, dashboard: App) -> None:
+    h.register("T001")
+    page = "work/T001/a1/repo/docs/html/zh-CN/DN015.html"
+    for ref, text in (
+        (page, '<link rel="stylesheet" href="style.css"><script>alert(1)</script><h1>DN015</h1>'),
+        ("work/T001/a1/repo/docs/html/zh-CN/style.css", "h1 { color: teal }"),
+        ("work/T001/a1/repo/docs/html/zh-CN/DN014.html", "<h1>DN014</h1>"),
+        ("work/T001/a1/drafts/design.md", "# 设计\n\n<script>alert(1)</script>\n"),
+    ):
+        path = h.home.root.joinpath(*ref.split("/"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    for output_id, ref in (("O-T001-zh", page), ("O-T001-md", "work/T001/a1/drafts/design.md")):
+        h.run(
+            "output_link",
+            task_id="T001",
+            output_id=output_id,
+            type="design",
+            ref=ref,
+            delivery="draft",
+            evidence=["test"],
+            verified_at="2026-11-23T00:00:00Z",
+        )
+    handed_back(h)
+    # Without the cookie nothing is served.
+    assert dashboard.request("GET", "/" + page)[0] == 403
+    dashboard.cookie = f"tsw_status_{dashboard.port}={dashboard.token}"
+    # The task view and the board link it like a report.
+    view = dashboard.request("GET", "/tasks/T001")[2].decode("utf-8")
+    assert f'<a href="../{page}">O-T001-zh</a>' in view
+    # The board is at the app's root: its links stay under a proxy's prefix without rewriting.
+    board = dashboard.request("GET", "/")[2].decode("utf-8")
+    assert f'href="{page}"' in board and f'href="../{page}"' not in board
+    # The page, under the documents' policy: its scripts do not run, its styles load.
+    status, headers, body = dashboard.request("GET", "/" + page)
+    assert (status, headers["Content-Type"]) == (200, "text/html; charset=utf-8")
+    assert body.decode("utf-8").endswith("<h1>DN015</h1>")
+    policy = headers["Content-Security-Policy"]
+    assert "script-src 'none'" in policy and "style-src 'self'" in policy
+    assert (headers["X-Content-Type-Options"], headers["Cache-Control"]) == ("nosniff", "no-store")
+    status, headers, _ = dashboard.request("GET", "/work/T001/a1/repo/docs/html/zh-CN/style.css")
+    assert (status, headers["Content-Type"]) == (200, "text/css; charset=utf-8")
+    # Markdown: plain text, rendered and escaped for the dialog.
+    status, headers, body = dashboard.request("GET", "/work/T001/a1/drafts/design.md")
+    assert (status, headers["Content-Type"]) == (200, "text/plain; charset=utf-8")
+    status, headers, body = dashboard.request("GET", "/work/T001/a1/drafts/design.md?view=html")
+    html = body.decode("utf-8")
+    assert (status, headers["Content-Type"]) == (200, "text/html; charset=utf-8")
+    assert html.startswith('<article class="md"><h1 id="md-设计">设计</h1>')
+    assert "<script>" not in html
+    # Everything else in work/ is refused, and says why.
+    for path in (
+        "/work/T001/a1/repo/docs/html/zh-CN/DN014.html",
+        "/work/T001/a1/repo/docs/html/zh-CN/../zh-CN/DN015.html",
+        "/work/T001/a1/repo/docs/html/zh-CN/%2E%2E/zh-CN/DN015.html",
+        "/work/T001/a1/repo/docs/html/zh-CN%5CDN015.html",
+        "/work/T001/../../tsw-home.json",
+        "/work/T001/a1/repo/docs/html/zh-CN/",
+        "/work/",
+    ):
+        status, _, body = dashboard.request("GET", path)
+        assert (status, body.decode("utf-8")) == (404, "不是已登记的产出"), path
+    h.home.root.joinpath(*page.split("/")).unlink()
+    status, _, body = dashboard.request("GET", "/" + page)
+    assert (status, body.decode("utf-8")) == (404, "文件不存在（执行目录可能已清理）")
+
+
+@mark.use_case("UC-DIRECT-010")
+def test_a_linked_work_output_is_served_by_the_name_asked_for(h: Harness, dashboard: App) -> None:
+    h.register("T001")
+    folder = h.home.root / "work" / "T001" / "a1" / "docs"
+    folder.mkdir(parents=True)
+    (folder / "notes.txt").write_text("# 笔记\n\n正文\n", encoding="utf-8")
+    (folder / "private.html").write_text("<h1>未登记</h1>", encoding="utf-8")
+    try:
+        (folder / "notes.md").symlink_to(folder / "notes.txt")
+        (folder / "style.css").symlink_to(folder / "private.html")
+    except OSError as exc:  # pragma: no cover - Windows without the symlink privilege
+        pytest.skip(f"cannot create a symbolic link here: {exc}")
+    h.run(
+        "output_link",
+        task_id="T001",
+        output_id="O-T001-notes",
+        type="research",
+        ref="work/T001/a1/docs/notes.md",
+        evidence=["test"],
+        verified_at="2026-11-23T00:00:00Z",
+    )
+    handed_back(h)
+    dashboard.cookie = f"tsw_status_{dashboard.port}={dashboard.token}"
+    # A registered .md that is a link renders as Markdown: the type follows the name asked for.
+    status, headers, body = dashboard.request("GET", "/work/T001/a1/docs/notes.md?view=html")
+    assert (status, headers["Content-Type"]) == (200, "text/html; charset=utf-8")
+    assert body.decode("utf-8").startswith('<article class="md"><h1 id="md-笔记">笔记</h1>')
+    # A link named like a style does not hand out the page it leads to.
+    status, _, body = dashboard.request("GET", "/work/T001/a1/docs/style.css")
+    assert (status, body.decode("utf-8")) == (404, "不是已登记的产出")

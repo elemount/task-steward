@@ -459,6 +459,9 @@ class Server:
         if name == "routine_start" and out.get("events"):
             # The app refuses a cwd spelled differently from the folder on disk.
             out["cwd"] = os.path.realpath(self.home.root / routine_mod.WORKDIR)
+        if name == "routine_disarmed" and out.get("events"):
+            self._note_disarm(out)
+            out["forward"] = self._disarmed_forward(out, ledger, usable)
         if name == "routine_run":
             job_id = str(args.get("job_id") or "")
             out["forward"] = self._forward(job_id, out, ledger, usable)
@@ -643,6 +646,46 @@ class Server:
             return {"send": False}
         if target is None:
             return {"send": False, "note": "主会话不在线：结果已在账本中，主会话下次运行时会看到"}
+        return {"send": True, "session_id": target, "message": message}
+
+    def _note_disarm(self, out: Mapping[str, Any]) -> None:
+        """A deletion the host did not confirm is not asked again while switched off this time
+        (routine cache, PR #89 review r5 F4); a confirmed one leaves no mark."""
+        data = out["events"][-1]["data"]
+        kept = routine_mod.load_cache(self.home)
+        if kept.get("generation") != data["generation"]:
+            kept = {"generation": data["generation"]}
+        if data.get("deleted", True):
+            kept.pop(routine_mod.DISARM_TRIED, None)
+        else:
+            kept[routine_mod.DISARM_TRIED] = data["job_ref"]
+        try:
+            self.home.cache_dir.mkdir(parents=True, exist_ok=True)
+            atomic_write(self.home.cache_dir / "routine.json", json.dumps(kept).encode("utf-8"))
+        except OSError:  # a lost mark only asks for the deletion once more
+            pass
+
+    def _disarmed_forward(
+        self, out: Mapping[str, Any], ledger: Ledger, config: EffectiveConfig
+    ) -> dict[str, Any]:
+        """The routine session deleted its timer: the orchestrator archives it next (CC006 §6.6).
+        Switched on again meanwhile, it is kept: no message asks to archive a session in use
+        (PR #89 review)."""
+        if config.get("routine.enabled"):
+            return {"send": False, "note": "例行会话已重新打开：不请主会话归档它"}
+        data = out["events"][-1]["data"]
+        generation = int(data["generation"])
+        with ledger.view() as conn:
+            target = routine_mod.orchestrator_session(conn, utc_now())
+            row = conn.execute(
+                "SELECT generation, session_ref FROM routine_sessions WHERE generation = ?",
+                (generation,),
+            ).fetchone()
+        if target is None or row is None:
+            return {"send": False, "note": "主会话不在线：结果已在账本中，主会话下次运行时会看到"}
+        message = routine_mod.disarmed_text(
+            {"generation": row[0], "session_ref": row[1]}, deleted=bool(data.get("deleted", True))
+        )
         return {"send": True, "session_id": target, "message": message}
 
     def _session_scan(self, conn: Any, config: EffectiveConfig, *, sending: bool) -> str:

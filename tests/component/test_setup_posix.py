@@ -54,7 +54,8 @@ def test_a_pi_install_links_tsw_installs_the_package_and_renders_pi_skills(tmp_p
     checks = {c["check"]: c["ok"] for c in out["verify"]["checks"]}
     assert checks["pi_package"] is True and checks["shims"] is True
     assert "plugin_source" not in checks and "/skill:orchestrate" in out["next"]
-    assert record(env)["steps"]["plugin"]["host"] == "pi"
+    assert record(env)["steps"]["pi_package"]["installed_before"] is False
+    assert "plugin" not in record(env)["steps"]
 
     again, rerun, _ = run_setup(product, "install", "--answers", str(answers), env=env)
     assert again == 0 and {s["step"]: s["state"] for s in rerun["steps"]}["plugin"] == "ok"
@@ -64,7 +65,7 @@ def test_a_pi_install_links_tsw_installs_the_package_and_renders_pi_skills(tmp_p
     assert not link.exists() and not link.is_symlink()
     assert json.loads((agent / "settings.json").read_text(encoding="utf-8"))["packages"] == []
     assert (home / "tsw-home.json").is_file()  # the data directory is never removed
-    assert gone["removed"]["plugin"]["ok"] is True
+    assert gone["removed"]["pi_package"]["ok"] is True
 
 
 def test_a_claude_code_install_on_linux_leaves_path_to_the_user(tmp_path: Path) -> None:
@@ -82,3 +83,28 @@ def test_a_claude_code_install_on_linux_leaves_path_to_the_user(tmp_path: Path) 
     assert path["state"] == "manual" and 'export PATH="$HOME/.local/bin:$PATH"' in path["manual"]
     shim = next(s for s in planned["steps"] if s["step"] == "shim")
     assert shim["dir"] == str(Path(env["HOME"]) / ".local" / "bin")
+
+
+@pytest.mark.use_case("UC-PI-003")
+def test_a_pi_package_the_user_had_is_kept_on_uninstall(tmp_path: Path) -> None:
+    product = make_product(tmp_path)
+    (tmp_path / "pi-bin").mkdir()
+    agent = tmp_path / "agent"
+    agent.mkdir()
+    package = str((product / "pi").resolve())
+    (agent / "settings.json").write_text(json.dumps({"packages": [package]}), encoding="utf-8")
+    env = setup_env(
+        tmp_path,
+        TSW_PI=str(stand_in(tmp_path / "pi-bin" / "pi", FAKE_PI)),
+        PI_CODING_AGENT_DIR=str(agent),
+    )
+    answers = write_answers(tmp_path, tmp_path / "data", host="pi", reviewer="none")
+    code, out, text = run_setup(product, "install", "--answers", str(answers), env=env)
+    assert code == 0, text
+    assert {s["step"]: s["state"] for s in out["steps"]}["plugin"] == "ok"
+    code, gone, text = run_setup(product, "uninstall", "--yes", env=env)
+    assert code == 0, text
+    assert "保留" in gone["removed"]["pi_package"]["note"]
+    assert json.loads((agent / "settings.json").read_text(encoding="utf-8"))["packages"] == [
+        package
+    ]

@@ -434,7 +434,8 @@ def _pi_package(ctx: Context, apply: bool) -> dict[str, Any]:
         "actions": [] if present else [f"pi install {pi_install.package(ctx.checkout)}"],
     }
     if apply:
-        ctx.record.begin("plugin", {"host": "pi", "installed_before": present})
+        # Its own step: a Claude Code plugin recorded under "plugin" has its own owner (review F8).
+        ctx.record.begin("pi_package", {"installed_before": present})
         if not present:
             pi = pi_install.find_pi(ctx.env)
             if pi is None:
@@ -443,7 +444,7 @@ def _pi_package(ctx: Context, apply: bool) -> dict[str, Any]:
             if not report["ok"]:
                 raise rejected("pi 包没有装好", reason="plugin_failed", report=report)
             result["report"] = report
-        ctx.record.finish("plugin", host="pi")
+        ctx.record.finish("pi_package", package=str(pi_install.package(ctx.checkout)))
     return result
 
 
@@ -1174,17 +1175,17 @@ def uninstall(ctx: Context) -> dict[str, Any]:
     wired = ctx.record.step("workdeck")
     if wired.get("added") or wired.get("state") == "started":
         done["workdeck"] = _remove_workdeck(ctx, wired)
-    plugin = ctx.record.step("plugin")
+    package = ctx.record.step("pi_package")
     pi = pi_install.find_pi(ctx.env)
+    if package.get("installed_before"):
+        done["pi_package"] = {"ok": True, "note": "安装前就已装好 pi 包，保留"}
+    elif package and pi is not None:
+        done["pi_package"] = pi_install.remove(ctx.env, pi, ctx.checkout)
+    elif package:
+        done["pi_package"] = {"ok": False, "note": "找不到 pi 命令行，pi 包没有移除"}
+    plugin = ctx.record.step("plugin")
     if not plugin:
         done["plugin"] = {"ok": True, "note": "安装没有动过插件，保留"}
-    elif plugin.get("host") == "pi":
-        if plugin.get("installed_before"):
-            done["plugin"] = {"ok": True, "note": "安装前就已装好 pi 包，保留"}
-        elif pi is not None:
-            done["plugin"] = pi_install.remove(ctx.env, pi, ctx.checkout)
-        else:
-            done["plugin"] = {"ok": False, "note": "找不到 pi 命令行，pi 包没有移除"}
     elif ctx.claude is not None:
         done["plugin"] = claude_install.remove_plugin(ctx.env, ctx.claude, plugin)
     else:

@@ -65,16 +65,24 @@ def test_the_guard_blocks_a_pi_write_into_the_ledger(home: Home) -> None:
     )
     out = json.loads(proc.stdout.strip().splitlines()[-1])
     assert proc.returncode == 0 and out["block"] is True and "ledger" in out["reason"]
-    proc = run_tsw(
-        "pi",
-        "guard",
-        "PreToolUse",
-        "--json",
-        env=child_env(TSW_HOME=str(home.root), TSW_SESSION_ID="orch-1"),
-        cwd=home.root,
-        stdin=json.dumps({"cwd": str(home.root), "tool": "read", "input": {"path": "x"}}),
-    )
-    assert "block" not in json.loads(proc.stdout.strip().splitlines()[-1])
+
+    def guarded(tool: str, path: str) -> dict[str, Any]:
+        proc = run_tsw(
+            "pi",
+            "guard",
+            "PreToolUse",
+            "--json",
+            env=child_env(TSW_HOME=str(home.root), TSW_SESSION_ID="orch-1"),
+            cwd=home.root,
+            stdin=json.dumps({"cwd": str(home.root), "tool": tool, "input": {"path": path}}),
+        )
+        return json.loads(proc.stdout.strip().splitlines()[-1])
+
+    assert "block" not in guarded("read", "x")
+    # The Dashboard token folder is refused to the read-only tools too (CC-B12).
+    secret = str(home.root.parent / "state" / "tsw-dashboard-secret" / "k.json")
+    assert guarded("read", secret)["block"] is True
+    assert guarded("grep", secret)["block"] is True
 
 
 @pytest.mark.use_case("UC-PI-001")

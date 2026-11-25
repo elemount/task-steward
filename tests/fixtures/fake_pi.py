@@ -4,7 +4,9 @@
     pi ... --list-models                      a fixed model table
     pi ... --print --mode json ... -- <p>     one review: FAKE_PI_ANSWER (JSON text) as the reply
     pi --mode rpc ...                         prompt / abort over JSONL; each prompt is answered
-                                              with "echo: <message>"
+                                              with "echo: <message>"; "orphan-and-exit" leaves a
+                                              child holding stdout and exits; FAKE_PI_STALL never
+                                              reads stdin
 
 Every call is appended to FAKE_PI_LOG (argv, cwd, TSW_SESSION_ID, and each RPC command).
 """
@@ -62,10 +64,24 @@ elif "--print" in args:
     )
     emit({"type": "agent_settled", "aborted": False})
 elif "--mode" in args and args[args.index("--mode") + 1] == "rpc":
+    if os.environ.get("FAKE_PI_STALL"):
+        # A pi that never reads its commands: the pipe fills and writes block.
+        import time
+
+        time.sleep(300)
     for line in sys.stdin:
         command = json.loads(line)
         log({"rpc": command, "session": os.environ.get("TSW_SESSION_ID")})
         ident = command.get("id")
+        if command.get("message") == "orphan-and-exit":
+            # pi exits and leaves a child holding its stdout (review F4).
+            import subprocess
+
+            child = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(300)"], stdout=sys.stdout
+            )
+            Path(os.environ["FAKE_PI_CHILD"]).write_text(str(child.pid), encoding="utf-8")
+            sys.exit(0)
         if command.get("type") == "prompt":
             emit(
                 {

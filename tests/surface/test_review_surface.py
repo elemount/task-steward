@@ -115,6 +115,16 @@ def alive(pid: int) -> bool:
     return str(pid) in listing.stdout
 
 
+def gone(pid: int, wait: float = 10.0) -> bool:
+    """The process has ended, allowing the moment a kill takes to land."""
+    deadline = time.monotonic() + wait
+    while alive(pid):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.1)
+    return True
+
+
 def test_closing_the_server_ends_the_wrapper_and_its_child(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -130,7 +140,7 @@ def test_closing_the_server_ends_the_wrapper_and_its_child(
     assert alive(child)
     server.close()
     assert server.proc.poll() is not None
-    assert not alive(child)
+    assert gone(child)
 
 
 def test_a_child_left_holding_the_pipe_is_ended_without_waiting_for_it(
@@ -155,7 +165,7 @@ def test_a_child_left_holding_the_pipe_is_ended_without_waiting_for_it(
     server.close()  # the wrapper exits at end of input; its grandchild does not
     assert time.monotonic() - started < 20
     assert server.proc.poll() is not None
-    assert not alive(child)
+    assert gone(child)
 
 
 @pytest.mark.windows

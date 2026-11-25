@@ -23,6 +23,11 @@ TOOLS: dict[str, tuple[str, dict[str, str]]] = {
     "write": ("Write", {"path": "file_path"}),
     "edit": ("Edit", {"path": "file_path"}),
     "bash": ("Bash", {}),
+    # Read-only tools reach the guard for the Dashboard token folder (CC-B12, review F2).
+    "read": ("Read", {}),
+    "grep": ("Grep", {}),
+    "find": ("Glob", {}),
+    "ls": ("LS", {}),
 }
 
 

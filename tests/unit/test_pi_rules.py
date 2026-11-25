@@ -11,6 +11,7 @@ import pytest
 from tsw.config import load_config, valid_model_id
 from tsw.home import Home
 from tsw.host import pi_guard, pi_sessions
+from tsw.host.guard import bash_problem
 from tsw.host.identity import session_of
 from tsw.machine.ask_user import is_automated
 from tsw.review import pi
@@ -41,6 +42,8 @@ def test_pi_tools_reach_the_guard_under_the_names_it_knows() -> None:
     assert write["session_id"] == "pi:w" and write["cwd"] == "/w"
     bash = pi_guard.hook_payload("PreToolUse", {"tool": "bash", "input": {"command": "ls"}}, env)
     assert bash["tool_name"] == "Bash" and bash["tool_input"] == {"command": "ls"}
+    read = pi_guard.hook_payload("PreToolUse", {"tool": "read", "input": {"path": "/s"}}, env)
+    assert read["tool_name"] == "Read" and read["tool_input"] == {"path": "/s"}
     prompt = pi_guard.hook_payload("UserPromptSubmit", {"prompt": "好"}, env)
     assert prompt["prompt"] == "好" and "tool_name" not in prompt
 
@@ -148,3 +151,20 @@ def test_a_pi_review_is_its_final_settled_reply_by_the_configured_model() -> Non
     cut = pi.read_output(_events(_reply(stop="length"), SETTLED), "openai/gpt-5.4")
     assert cut.status == "failed"
     assert pi.read_output([b"not json\n"], "openai/gpt-5.4").status == "failed"
+
+
+@pytest.mark.use_case(PI)
+def test_the_shell_knows_the_pi_commands_and_refuses_the_hook_entry(home: Home) -> None:
+    def problem(command: str) -> str | None:
+        return bash_problem(
+            command,
+            home=home,
+            push_allowed=False,
+            pr_allowed=False,
+            worker=False,
+            orchestrator=True,
+        )
+
+    assert problem("tsw pi stop --name t001-a1-g1") is None
+    assert problem("tsw pi list") is None
+    assert "hook" in str(problem("tsw pi guard UserPromptSubmit"))

@@ -27,6 +27,8 @@ import os
 import re
 import shutil
 import socket
+import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -50,7 +52,8 @@ MAILBOX = "mailbox"
 PI_ENV = "TSW_PI"  # the pi command line (default: ``pi`` on PATH)
 IDLE_ENV = "TSW_PI_IDLE_SECONDS"
 IDLE_SECONDS = 600.0
-COMMAND_TIMEOUT = 60.0
+COMMAND_TIMEOUT = 60.0  # writing a command, and waiting for its response, each
+STOP_TIMEOUT = 5.0
 START_WAIT = 15.0
 REPLIES = 50  # completed replies kept per worker for ``tsw pi chat``
 NAME = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
@@ -66,14 +69,63 @@ def folder(home: Home) -> Path:
     return home.root / DIR
 
 
+def _uid() -> int:
+    return int(getattr(os, "getuid", lambda: 0)())  # POSIX only, as the server (PI001 §1)
+
+
 def socket_path(home: Home) -> Path:
     """A short path (Unix sockets are limited to about 100 bytes) in a folder only this user
     can enter: ``$XDG_RUNTIME_DIR``, else the temporary directory."""
     key = hashlib.sha256(str(home.root.resolve()).encode("utf-8")).hexdigest()[:12]
     runtime = os.environ.get("XDG_RUNTIME_DIR")
-    uid = getattr(os, "getuid", lambda: 0)()  # POSIX only, as the server (PI001 §1)
-    base = Path(runtime) if runtime else Path(tempfile.gettempdir()) / f"tsw-{uid}"
+    base = Path(runtime) if runtime else Path(tempfile.gettempdir()) / f"tsw-{_uid()}"
     return base / f"tsw-pi-{key}.sock"
+
+
+def _unsafe(path: Path, what: str) -> TswError:
+    return TswError(
+        ErrorCode.UNAVAILABLE,
+        f"{path} {what}：tsw pi serve 的套接字只放在本用户独有的位置，没有连接",
+        reason="pi_socket_unsafe",
+    )
+
+
+def private_dir(path: Path, *, create: bool) -> None:
+    """The socket's folder: a real directory of this user that nobody else can enter. Another
+    user could otherwise put a socket of their own where the client looks (``/tmp`` is shared,
+    review F1). A missing folder is ``FileNotFoundError`` when not ``create``."""
+    if create:
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    info = path.lstat()
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise _unsafe(path, "不是目录")
+    if info.st_uid != _uid():
+        raise _unsafe(path, "不属于本用户")
+    if info.st_mode & 0o077:
+        if not create:
+            raise _unsafe(path, "其他用户可以进入")
+        path.chmod(0o700)
+
+
+def _check_socket(path: Path) -> None:
+    info = path.lstat()
+    if not stat.S_ISSOCK(info.st_mode) or info.st_uid != _uid():
+        raise _unsafe(path, "不是本用户的套接字")
+
+
+def _check_peer(conn: socket.socket) -> None:
+    """On Linux, the process at the other end runs as this user too."""
+    option = getattr(socket, "SO_PEERCRED", None)
+    if option is None:
+        return
+    raw = conn.getsockopt(socket.SOL_SOCKET, option, struct.calcsize("3i"))
+    _pid, uid, _gid = struct.unpack("3i", raw)
+    if uid != _uid():
+        raise TswError(
+            ErrorCode.UNAVAILABLE,
+            "tsw pi serve 的另一端不是本用户的进程，没有连接",
+            reason="pi_socket_unsafe",
+        )
 
 
 def ref(name: str) -> str:
@@ -161,6 +213,7 @@ class Worker:
         self.seq = 0
         self.exit: int | None = None
         self._lock = threading.Lock()
+        self._write_lock = threading.Lock()
         self._waiting: dict[str, tuple[threading.Event, list[dict[str, Any]]]] = {}
         self._next = 0
         env = dict(os.environ)
@@ -182,6 +235,10 @@ class Worker:
         )
         self._reader = threading.Thread(target=self._read, daemon=True)
         self._reader.start()
+        # Once pi exits, whatever it left running is ended too: a descendant keeping its stdout
+        # open would otherwise outlive it and keep the reader waiting (review F4).
+        self._waiter = threading.Thread(target=self._wait, daemon=True)
+        self._waiter.start()
 
     @property
     def alive(self) -> bool:
@@ -189,21 +246,27 @@ class Worker:
 
     def _read(self) -> None:
         stream = cast("IO[bytes]", self.tree.proc.stdout)
-        for raw in iter(stream.readline, b""):
-            with contextlib.suppress(ValueError, UnicodeDecodeError):
-                record: Any = json.loads(raw.rstrip(b"\r\n").decode("utf-8"))
-                if isinstance(record, dict):
-                    self._on(cast("dict[str, Any]", record))
+        with contextlib.suppress(OSError, ValueError):
+            for raw in iter(stream.readline, b""):
+                with contextlib.suppress(ValueError, UnicodeDecodeError):
+                    record: Any = json.loads(raw.rstrip(b"\r\n").decode("utf-8"))
+                    if isinstance(record, dict):
+                        self._on(cast("dict[str, Any]", record))
+        with contextlib.suppress(OSError):
+            stream.close()
+
+    def _wait(self) -> None:
         self.exit = self.tree.proc.wait()
-        for pipe in (stream, self.tree.proc.stdin):
-            with contextlib.suppress(OSError):
-                if pipe is not None:
-                    pipe.close()
+        self.tree.end()  # the rest of the process group; its end closes the pipes
         with self._lock:
             self.busy = False
             for event, box in self._waiting.values():
                 box.append({"success": False, "error": "pi 已退出"})
                 event.set()
+            self._waiting.clear()
+        with contextlib.suppress(OSError):
+            if self.tree.proc.stdin is not None:
+                self.tree.proc.stdin.close()
 
     def _on(self, record: dict[str, Any]) -> None:
         kind = record.get("type")
@@ -229,24 +292,46 @@ class Worker:
                         self.seq += 1
                         self.replies.append((self.seq, text))
 
-    def command(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        """Send one RPC command and wait for its response."""
+    def _write(self, data: bytes, timeout: float) -> None:
+        """Write to pi's stdin within ``timeout``: a pi that stopped reading would otherwise
+        block the caller for good once the pipe is full (review F5). Past it, pi is ended."""
+        failed: list[BaseException] = []
+
+        def write() -> None:
+            with self._write_lock:
+                try:
+                    stdin = cast("IO[bytes]", self.tree.proc.stdin)
+                    stdin.write(data)
+                    stdin.flush()
+                except (OSError, ValueError) as exc:
+                    failed.append(exc)
+
+        writer = threading.Thread(target=write, daemon=True)
+        writer.start()
+        writer.join(timeout)
+        if writer.is_alive():
+            self.tree.end()
+            raise TswError(ErrorCode.UNAVAILABLE, "pi 不再读取命令，已结束它", reason="pi_timeout")
+        if failed:
+            raise TswError(
+                ErrorCode.UNAVAILABLE, "pi 不接受命令（已退出）", reason="pi_exited"
+            ) from failed[0]
+
+    def command(self, payload: Mapping[str, Any], timeout: float | None = None) -> dict[str, Any]:
+        """Send one RPC command and wait for its response, each within the time limit."""
+        limit = COMMAND_TIMEOUT if timeout is None else timeout
         with self._lock:
             self._next += 1
             ident = f"tsw-{self._next}"
             event, box = threading.Event(), cast("list[dict[str, Any]]", [])
             self._waiting[ident] = (event, box)
-        stdin = cast("IO[bytes]", self.tree.proc.stdin)
         try:
-            stdin.write(json.dumps({**payload, "id": ident}).encode("utf-8") + b"\n")
-            stdin.flush()
-        except OSError as exc:
+            self._write(json.dumps({**payload, "id": ident}).encode("utf-8") + b"\n", limit)
+        except TswError:
             with self._lock:
                 self._waiting.pop(ident, None)
-            raise TswError(
-                ErrorCode.UNAVAILABLE, "pi 不接受命令（已退出）", reason="pi_exited"
-            ) from exc
-        if not event.wait(COMMAND_TIMEOUT):
+            raise
+        if not event.wait(limit):
             with self._lock:
                 self._waiting.pop(ident, None)
             raise TswError(ErrorCode.UNAVAILABLE, "pi 没有回应命令", reason="pi_timeout")
@@ -274,14 +359,12 @@ class Worker:
             }
 
     def stop(self) -> None:
+        """Abort the run (briefly), then end the whole process tree whatever pi does."""
         with contextlib.suppress(TswError):
             if self.alive:
-                self.command({"type": "abort"})
-        with contextlib.suppress(OSError):
-            cast("IO[bytes]", self.tree.proc.stdin).close()
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            self.tree.proc.wait(timeout=10)
+                self.command({"type": "abort"}, timeout=STOP_TIMEOUT)
         self.tree.end()
+        self._waiter.join(timeout=10)
         self._reader.join(timeout=10)
 
 
@@ -318,6 +401,7 @@ class Server:
         self.workers: dict[str, Worker] = {}
         self.lock = threading.Lock()
         self.last_busy = time.monotonic()
+        self.closing = False
 
     def _spawn(self, name: str, cwd: Path, request: Mapping[str, Any]) -> Worker:
         state = {"name": name, "cwd": str(cwd), "state": "starting", "request": dict(request)}
@@ -332,6 +416,8 @@ class Server:
         found = self.workers.get(name)
         if found is not None and found.alive:
             return found
+        if found is not None:
+            found.stop()  # whatever the ended pi left running goes first (review F4)
         state = read_state(self.home, name)
         if state is None:
             raise rejected(f"没有 pi 会话 {name}", reason="unknown_session", name=name)
@@ -346,6 +432,8 @@ class Server:
             return {"ok": True, "sessions": self.listing()}
         name = check_name(str(request.get("name") or ""))
         with self.lock:
+            if self.closing:
+                raise rejected("tsw pi serve 正在退出，稍后再试", reason="pi_server_closing")
             if op == "start":
                 existing = self.workers.get(name)
                 if existing is not None and existing.alive:
@@ -377,11 +465,16 @@ class Server:
             out.update(worker.prompt(message, steer=op == "chat"))
         return out
 
+    def snapshot(self) -> dict[str, Worker]:
+        with self.lock:
+            return dict(self.workers)
+
     def listing(self) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
+        workers = self.snapshot()
         for path in sorted(folder(self.home).glob("*.json")):
             state = read_state(self.home, path.stem) or {}
-            worker = self.workers.get(path.stem)
+            worker = workers.get(path.stem)
             out.append(
                 {
                     "name": path.stem,
@@ -396,14 +489,22 @@ class Server:
         return out
 
     def idle(self) -> bool:
-        if any(w.alive for w in self.workers.values()):
-            self.last_busy = time.monotonic()
-            return False
-        limit = float(os.environ.get(IDLE_ENV) or IDLE_SECONDS)
-        return time.monotonic() - self.last_busy > limit
+        """No worker has run for a while: the server then stops taking requests and exits
+        (the decision and the workers it looks at are taken under the lock, review F6)."""
+        with self.lock:
+            if any(w.alive for w in self.workers.values()):
+                self.last_busy = time.monotonic()
+                return False
+            limit = float(os.environ.get(IDLE_ENV) or IDLE_SECONDS)
+            done = time.monotonic() - self.last_busy > limit
+            self.closing = self.closing or done
+            return done
 
     def close(self) -> None:
-        for worker in self.workers.values():
+        with self.lock:
+            self.closing = True
+            workers = list(self.workers.values())
+        for worker in workers:
             worker.stop()
 
 
@@ -431,12 +532,11 @@ def serve(home: Home) -> dict[str, Any]:
     except TswError:
         return {"served": False, "note": "已有 tsw pi serve 在运行"}
     path = socket_path(home)
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path.parent.chmod(0o700)
-    path.unlink(missing_ok=True)
     listener = socket.socket(AF_UNIX, socket.SOCK_STREAM)
     server = Server(home)
     try:
+        private_dir(path.parent, create=True)
+        path.unlink(missing_ok=True)
         old = os.umask(0o177)  # the socket is this user's only
         try:
             listener.bind(str(path))
@@ -452,7 +552,9 @@ def serve(home: Home) -> dict[str, Any]:
             threading.Thread(target=_answer, args=(server, conn), daemon=True).start()
     finally:
         listener.close()
-        path.unlink(missing_ok=True)
+        with contextlib.suppress(OSError):
+            if path.is_socket():
+                path.unlink()
         server.close()
         lock.release()
     return {"served": True}
@@ -462,9 +564,14 @@ def serve(home: Home) -> dict[str, Any]:
 
 
 def _ask(path: Path, request: Mapping[str, Any], timeout: float) -> dict[str, Any]:
+    """One request. A folder or socket that is not this user's own is refused before anything
+    is sent (review F1); a missing one is an OSError, and the caller starts the server."""
+    private_dir(path.parent, create=False)
+    _check_socket(path)
     with socket.socket(AF_UNIX, socket.SOCK_STREAM) as conn:
         conn.settimeout(timeout)
         conn.connect(str(path))
+        _check_peer(conn)
         with conn.makefile("rwb") as stream:
             stream.write(json.dumps(dict(request)).encode("utf-8") + b"\n")
             stream.flush()

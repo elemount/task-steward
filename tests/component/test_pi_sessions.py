@@ -6,6 +6,7 @@ pi is outside this repository: ``tests/fixtures/fake_pi.py`` stands in for it (s
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ import pytest
 
 from tests.machine_harness import Harness
 from tests.support import REPO_ROOT, stand_in
+from tsw.errors import TswError
 from tsw.home import Home
 from tsw.host import pi_cli, pi_install, pi_sessions
 from tsw.review import models, pi
@@ -201,3 +203,71 @@ def test_a_pi_review_runs_read_only_without_extensions(
     ):
         assert flag in argv
     assert argv[argv.index("--tools") + 1] == "read,grep,find,ls"
+
+
+def ended(pid: int, wait: float = 10.0) -> bool:
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        stat = Path(f"/proc/{pid}/stat")
+        if stat.is_file() and stat.read_text().split(")")[-1].split()[0] == "Z":
+            return True
+        time.sleep(0.1)
+    return False
+
+
+@pytest.mark.use_case(SESSIONS)
+def test_what_an_exited_worker_left_running_is_ended(
+    home: Home, tmp_path: Path, fake_pi: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    child_file = tmp_path / "child.pid"
+    monkeypatch.setenv("FAKE_PI_CHILD", str(child_file))
+    server = pi_sessions.Server(home)
+    server.handle({"op": "start", "name": "w", "cwd": str(tmp_path), "prompt": "go"})
+    with pytest.raises(TswError, match="pi 已退出"):  # pi exits before it answers
+        server.handle({"op": "send", "name": "w", "message": "orphan-and-exit"})
+    child = int(wait_for(lambda: child_file.is_file() and child_file.read_text()))
+    assert ended(child)
+    # The next message resumes the same session.
+    server.handle({"op": "send", "name": "w", "message": "again"})
+    assert sum(1 for c in calls(tmp_path) if "argv" in c) == 2
+    server.close()
+
+
+@pytest.mark.use_case(SESSIONS)
+def test_a_worker_that_stops_reading_is_ended_within_the_time_limit(
+    home: Home, tmp_path: Path, fake_pi: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FAKE_PI_STALL", "1")
+    monkeypatch.setattr(pi_sessions, "COMMAND_TIMEOUT", 1.0)
+    server = pi_sessions.Server(home)
+    started = time.monotonic()
+    with pytest.raises(Exception, match="pi"):
+        server.handle({"op": "start", "name": "w", "cwd": str(tmp_path), "prompt": "x" * 400_000})
+    assert time.monotonic() - started < 15
+    worker = server.snapshot()["w"]
+    wait_for(lambda: not worker.alive)
+    server.close()
+    with pytest.raises(Exception, match="正在退出"):
+        server.handle({"op": "start", "name": "w2", "cwd": str(tmp_path), "prompt": "x"})
+
+
+@pytest.mark.use_case(SESSIONS)
+def test_the_client_refuses_a_socket_folder_others_can_enter(
+    home: Home, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    runtime.chmod(0o777)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    with pytest.raises(Exception, match="其他用户可以进入"):
+        pi_sessions.request(home, {"op": "list"}, start=False)
+    runtime.chmod(0o700)
+    link = tmp_path / "link"
+    link.symlink_to(runtime)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(link))
+    with pytest.raises(Exception, match="不是目录"):
+        pi_sessions.request(home, {"op": "list"}, start=False)

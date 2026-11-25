@@ -134,15 +134,19 @@ export default function taskSteward(pi: ExtensionAPI) {
 		}
 	});
 
+	// The tools the guard knows (PI001 §4.2): writes and the shell, and the read-only file tools
+	// for the Dashboard token folder (CC-B12).
+	const GUARDED = new Set(["write", "edit", "bash", "read", "grep", "find", "ls"]);
 	pi.on("tool_call", async (event) => {
-		if (!["write", "edit", "bash"].includes(event.toolName)) return;
+		if (!GUARDED.has(event.toolName)) return;
 		const out = await guard("PreToolUse", { tool: event.toolName, input: event.input });
 		if (out.block) return { block: true, reason: String(out.reason || "TaskSteward 护栏拒绝") };
 	});
 
 	let reminded = false;
 	pi.on("agent_before_settle", async (event) => {
-		if (reminded || !ROLES.has(role)) {
+		// The guard resolves the role now: a worker starts pending and is bound later (review F3).
+		if (reminded || !session) {
 			reminded = false;
 			return;
 		}

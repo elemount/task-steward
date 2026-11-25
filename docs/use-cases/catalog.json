@@ -1637,7 +1637,7 @@
       "id": "UC-PI-001",
       "title": "pi 上的 worker 会话：tsw pi serve 持有 pi --mode rpc，主会话创建、投递、停止，用户 tsw pi chat 直接对话（PI001 §5）",
       "actor": "主会话（pi 扩展）/ worker / 用户 / tsw CLI",
-      "acceptance": "tsw pi start 只为 attempt_start 已落账、处于 starting 的 session_name 创建会话，会话目录须是该 attempt 的执行目录或其中的 worktree，调用者须是主会话；每个数据目录一个 tsw pi serve（文件锁，第二个立即退出），在只有本用户能进入的目录中监听 Unix 套接字，按需由客户端以独立进程组启动，没有运行中的 worker 一段时间后退出；worker 以 pi --mode rpc --session-id <会话名> -e <检出>/pi 在会话目录启动，环境带 TSW_SESSION_ID=pi:<会话名> 与 TSW_HOME，启动前写会话状态；首条 RPC prompt 是 attempt_start 返回的 prompt；运行中再投递用 followUp（chat 用 steer）；停止的 worker 收到消息时以同一会话 ID 与目录恢复；tsw pi send 给服务器持有的 worker 投递、给其他会话（主会话）写邮箱，内容带 <cross-session-message> 包装，不算用户的话；tsw pi list 列出会话；tsw pi chat 在会话中拒绝，在终端中显示 worker 完成的回复并逐行投递用户输入；服务器只在内存中保留最近的回复，不写模型输出",
+      "acceptance": "tsw pi start 只为 attempt_start 已落账、处于 starting 的 session_name 创建会话，会话目录须是该 attempt 的执行目录或其中的 worktree，调用者须是主会话；每个数据目录一个 tsw pi serve（文件锁，第二个立即退出），在只有本用户能进入的目录中监听 Unix 套接字，按需由客户端以独立进程组启动，没有运行中的 worker 一段时间后退出；worker 以 pi --mode rpc --session-id <会话名> -e <检出>/pi 在会话目录启动，环境带 TSW_SESSION_ID=pi:<会话名> 与 TSW_HOME，启动前写会话状态；首条 RPC prompt 是 attempt_start 返回的 prompt；运行中再投递用 followUp（chat 用 steer）；停止的 worker 收到消息时以同一会话 ID 与目录恢复；tsw pi send 给服务器持有的 worker 投递、给其他会话（主会话）写邮箱，内容带 <cross-session-message> 包装，不算用户的话；tsw pi list 列出会话；tsw pi chat 在会话中拒绝，在终端中显示 worker 完成的回复并逐行投递用户输入；服务器只在内存中保留最近的回复，不写模型输出；客户端发送前核对套接字目录是本用户的真实目录、他人不能进入、套接字属于本用户，Linux 上核对对端用户；pi 退出时结束它的整个进程组，恢复前结束旧的；写命令与等待回应各有时限，超时结束 pi；退出中的服务拒绝新的请求",
       "surfaces": [
         "cli"
       ],
@@ -1668,7 +1668,7 @@
       "id": "UC-PI-002",
       "title": "pi 扩展经 tsw 识别会话、注册 tsw 工具、过护栏、轮询唤醒（PI001 §4、§5.3、§6）",
       "actor": "pi 扩展 / 主会话 / worker",
-      "acceptance": "会话身份依次取 TSW_SESSION_ID、CLAUDE_CODE_HOST_SESSION_ID、pi 的 PI_SESSION_ID（加 pi: 前缀）；tsw pi whoami 返回角色、tsw MCP server 的启动方式与 TaskSteward 会话的 pi 说明（无关会话为空）；tsw pi guard 把 pi 的 write/edit/bash 转为 guard 认识的 Write/Edit/Bash（path→file_path）再经同一个 tsw guard，拒绝时返回 block 与原因，上下文与 Stop 的继续原样返回；tsw pi poll 取走主会话邮箱中的消息，持租主会话另得到到期未答的会话内问题",
+      "acceptance": "会话身份依次取 TSW_SESSION_ID、CLAUDE_CODE_HOST_SESSION_ID、pi 的 PI_SESSION_ID（加 pi: 前缀）；tsw pi whoami 返回角色、tsw MCP server 的启动方式与 TaskSteward 会话的 pi 说明（无关会话为空）；tsw pi guard 把 pi 的 write/edit/bash 转为 guard 认识的 Write/Edit/Bash（path→file_path）再经同一个 tsw guard，拒绝时返回 block 与原因，上下文与 Stop 的继续原样返回；tsw pi poll 取走主会话邮箱中的消息，持租主会话另得到到期未答的会话内问题；只读的 read/grep/find/ls 也经 guard（Dashboard 令牌目录 CC-B12）；会话的 shell 中运行 tsw pi guard 被拒绝，tsw pi 的其他命令按 pi 命令组识别",
       "surfaces": [
         "cli",
         "hook"
@@ -1697,7 +1697,7 @@
       "id": "UC-PI-003",
       "title": "以 pi 为宿主安装与 render（PI001 §8）",
       "actor": "用户 / tsw setup",
-      "acceptance": "本机有 pi 时安装才提供宿主 pi，找不到 claude 而有 pi 时默认 pi；宿主 pi 的新数据目录配置为 plugins.host_integration pi、主会话 pi-tui、worker pi-rpc（模型 default，即 pi 自己的）、例行会话关闭，且通过校验（宿主 pi 时其他会话适配器、开启例行会话或 teams-chat 报错，权限模式只警告）；pi 的模型写作 provider/model；install 用 pi install <检出>/pi 安装 pi 包（已声明时跳过），不写 Claude Code 用户设置、不接入 workdeck，render 另把 skill 复制到 .pi/skills，verify 核对 pi_package；uninstall 用 pi remove 移除安装加入的 pi 包；next 说明在数据目录运行 pi 并输入 /skill:orchestrate",
+      "acceptance": "本机有 pi 时安装才提供宿主 pi，找不到 claude 而有 pi 时默认 pi；宿主 pi 的新数据目录配置为 plugins.host_integration pi、主会话 pi-tui、worker pi-rpc（模型 default，即 pi 自己的）、例行会话关闭，且通过校验（宿主 pi 时其他会话适配器、开启例行会话或 teams-chat 报错，权限模式只警告）；pi 的模型写作 provider/model；install 用 pi install <检出>/pi 安装 pi 包（已声明时跳过），不写 Claude Code 用户设置、不接入 workdeck，render 另把 skill 复制到 .pi/skills，verify 核对 pi_package；uninstall 用 pi remove 移除安装加入的 pi 包；next 说明在数据目录运行 pi 并输入 /skill:orchestrate；pi 包的归属记在安装记录自己的 pi_package 步骤，安装前就已声明的 pi 包卸载时保留",
       "surfaces": [
         "cli"
       ],

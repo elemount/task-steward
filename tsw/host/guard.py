@@ -131,6 +131,7 @@ _TSW_GROUPS = {
     "reviewer",
     "dashboard",
     "setup",
+    "pi",
 }
 # Path fields of the tools that read or write files (CC008 CC-B12).
 _PATH_FIELDS = ("file_path", "path", "notebook_path")
@@ -348,7 +349,7 @@ def bash_problem(
             return f"只能写入本任务的可写路径（{path} 不在其中）"
     for program in facts.programs:
         cli = tsw_cli_command(program)
-        if cli == "guard":
+        if cli in ("guard", "pi guard"):
             # Hooks are run by the host, never from a session's shell: a hook records the user's
             # own words (DN006 §8.1a), so running it by hand would let a session invent them.
             return "hook 入口只由宿主调用，会话中不能运行 tsw guard"

@@ -60,7 +60,8 @@ DN008 的 block list 规则按工具名与参数判断。`tsw pi guard` 把 pi �
 | `write` | `Write` | `path` → `file_path` |
 | `edit` | `Edit` | `path` → `file_path` |
 | `bash` | `Bash` | `command` |
-| 其他（`read`、`grep`、`find`、`ls`、`mcp__tsw__*`、其他扩展的工具） | 不检查 | 只读，或由 tsw 的状态机守卫，或与 Claude Code 上未匹配的工具相同（block list） |
+| `read`、`grep`、`find`、`ls` | `Read`、`Grep`、`Glob`、`LS` | 路径（只用于 Dashboard 令牌目录的规则 CC-B12） |
+| 其他（`mcp__tsw__*`、其他扩展的工具） | 不检查 | 由 tsw 的状态机守卫，或与 Claude Code 上未匹配的工具相同（block list） |
 
 ## 5. worker
 
@@ -78,9 +79,9 @@ DN008 的 block list 规则按工具名与参数判断。`tsw pi guard` 把 pi �
 
 worker 不作为主会话 pi 进程的子进程：用户退出或重开主会话时，正在工作的 worker 不被结束（用户决定，§9）。`tsw pi serve`：
 
-- 每个数据目录一个（`locks/pi-sessions.lock`，第二个立即退出）；监听 Unix 套接字，放在只有本用户能进入的目录（`$XDG_RUNTIME_DIR`，没有时 `<临时目录>/tsw-<uid>`，套接字路径长度有限）；
+- 每个数据目录一个（`locks/pi-sessions.lock`，第二个立即退出）；监听 Unix 套接字，放在只有本用户能进入的目录（`$XDG_RUNTIME_DIR`，没有时 `<临时目录>/tsw-<uid>`，套接字路径长度有限）。`/tmp` 是共用的：客户端发送任何内容之前核对该目录是本用户的真实目录、其他用户不能进入，套接字属于本用户，Linux 上另核对对端进程的用户（`SO_PEERCRED`）；不满足时不连接；
 - 客户端连接不上时以独立进程组启动它（stderr 写入 `cache/pi-sessions/serve.log`）；没有运行中的 worker 达 `TSW_PI_IDLE_SECONDS`（缺省 600 秒）后退出；
-- 每个 worker 一个 `pi --mode rpc` 子进程，持续读取它的 stdout，只在 LF 处分帧；记录是否在运行一轮（`agent_start` / `agent_settled`）与退出码；
+- 每个 worker 一个 `pi --mode rpc` 子进程（独立进程组），持续读取它的 stdout，只在 LF 处分帧；记录是否在运行一轮（`agent_start` / `agent_settled`）与退出码。pi 退出时结束它的整个进程组（留下的子进程不会占着输出继续运行）；写命令与等待回应各有时限，不再读取命令的 pi 被结束；停止时先在时限内 abort，然后无论如何结束进程组；退出时不再接受新的请求；
 - 只在内存中保留每个 worker 最近完成的回复（供 `tsw pi chat` 显示），不把模型输出写到任何地方；reportable 事件都经 tsw 工具落账，与 Claude Code 相同；
 - 子进程意外退出后，主会话按 DN002 的会话丢失处理，或给它发消息使它恢复。
 
@@ -115,11 +116,11 @@ worker 落账 reportable 事件后照常给持租主会话发消息（DN001 §6.
 | Claude Code hook | pi 扩展事件 | 做法 |
 | --- | --- | --- |
 | `SessionStart` | `session_start` | `tsw pi guard SessionStart`，上下文作为扩展消息显示 |
-| `PreToolUse` | `tool_call`（`write`、`edit`、`bash`） | 按 §4.2 转换后经 guard；拒绝时返回 `{block: true, reason}`，reason 是 guard 的说明（含规则编号与正确做法） |
+| `PreToolUse` | `tool_call`（`write`、`edit`、`bash`，以及只读的 `read`、`grep`、`find`、`ls`） | 按 §4.2 转换后经 guard；拒绝时返回 `{block: true, reason}`，reason 是 guard 的说明（含规则编号与正确做法）。只读工具也经过，Dashboard 令牌目录（CC-B12）对它们同样拒绝 |
 | `UserPromptSubmit` | `input`（交互输入与 RPC 输入；扩展注入的不算） | 经 guard，记录用户原话供 G-USER 引用（DN002 §5.1a）；上下文以 steer 加入这一轮 |
-| `Stop` | `agent_before_settle` | 经 guard；需要提醒时加一条扩展消息并继续一轮（每轮最多一次） |
+| `Stop` | `agent_before_settle` | 经 guard（角色由 guard 当时解析：worker 启动时待绑定，之后才绑定）；需要提醒时加一条扩展消息并继续一轮（每轮最多一次） |
 
-`tsw pi guard` 按 Claude Code hooks 的字段组装 payload（`session_id`、`cwd`、`tool_name`、`tool_input`、`prompt`），guard 读取时本来就忽略未知字段（compatibility.md）；pi 没有会话记录的 `transcript_path`，guard 读不到来源时照旧按它看到的消息判断。guard 内部失败时放行并在 stderr 报告，与 hooks 相同。
+会话的 shell 中不能运行 `tsw pi guard`（与 `tsw guard` 相同：它会记录用户原话，只由扩展调用）。`tsw pi guard` 按 Claude Code hooks 的字段组装 payload（`session_id`、`cwd`、`tool_name`、`tool_input`、`prompt`），guard 读取时本来就忽略未知字段（compatibility.md）；pi 没有会话记录的 `transcript_path`，guard 读不到来源时照旧按它看到的消息判断。guard 内部失败时放行并在 stderr 报告，与 hooks 相同。
 
 ### 6.2 用户原话
 

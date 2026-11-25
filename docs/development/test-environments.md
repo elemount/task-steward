@@ -7,10 +7,15 @@
 - 每个测试有自己的临时数据目录（`TSW_HOME`）和临时 git 仓库。测试夹具在创建时检查 `TSW_HOME` 位于
   本次运行的临时根目录下，否则立即失败。
 - 启动子进程时使用干净的环境：
-  - 删除继承的 `CLAUDE*`、`ANTHROPIC*`、`CODEX*` 变量（PoC 发现宿主变量会改变 `claude` 命令行的认证
-    行为）；
+  - 删除继承的 `CLAUDE*`、`ANTHROPIC*`、`CODEX*`、`PI_*`、`TSW_SESSION*` 变量（PoC 发现宿主变量会改变
+    `claude` 命令行的认证行为；在 pi 中运行门禁时 `PI_SESSION_ID` 会让测试进程被认作 pi 会话）；
+  - `PATH` 中去掉含 `workdeck` 或 `pi` 命令的目录，需要时由测试放入替身；Linux / WSL 上读不到的 Windows
+    目录（`/mnt/c/...`）视为没有；
   - 把 `HOME`、`USERPROFILE`、`CLAUDE_CONFIG_DIR`、`CODEX_HOME` 指向临时目录，确保读不到用户真实配置；
-  - 需要会话 ID 等宿主变量时由测试显式设置（例如 `CLAUDE_CODE_HOST_SESSION_ID`）。
+  - 需要会话 ID 等宿主变量时由测试显式设置（例如 `CLAUDE_CODE_HOST_SESSION_ID`、`TSW_SESSION_ID`）。
+- 测试启动的命令行替身用 `tests/support.py` 的 `stand_in`：Windows 上是 `.cmd`，其他平台上是可执行的 sh 脚本。
+- surface 层级的浏览器测试在 Linux / WSL 上找 `google-chrome`、`chromium` 等；都没有时用 `TSW_TEST_BROWSER` 指定
+  （例如 Playwright 下载的 `chrome-headless-shell`）。
 - 不联网，不调用模型，不访问 GitHub。临时 git 仓库没有远端，测试中不执行 push。
 - MCP server 与 hooks 走 stdio，不占用端口；需要端口时动态分配，不用固定端口。
 - 并发运行的测试不共享进程级环境变量、锁文件或数据目录。

@@ -88,6 +88,28 @@ if sys.platform == "win32":
     _ntdll.NtResumeProcess.argtypes = [wintypes.HANDLE]
     _ntdll.NtResumeProcess.restype = ctypes.c_long
 
+    def _job_for(process: int) -> Any:
+        """Put the (still suspended) process into a kill-on-close job; None if that is refused."""
+        job = _kernel32.CreateJobObjectW(None, None)
+        try:
+            if not job:
+                return None
+            limits = _ExtendedLimits()
+            limits.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            configured = _kernel32.SetInformationJobObject(
+                job,
+                _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+                ctypes.byref(limits),
+                ctypes.sizeof(limits),
+            )
+            if configured and _kernel32.AssignProcessToJobObject(job, process):
+                owned, job = job, None
+                return owned
+            return None
+        finally:
+            if job:
+                _kernel32.CloseHandle(job)
+
 
 class ProcessTree:
     def __init__(self, argv: Sequence[str], **popen: Any) -> None:
@@ -130,26 +152,3 @@ class ProcessTree:
             self.proc.kill()
         with contextlib.suppress(subprocess.TimeoutExpired):
             self.proc.wait(timeout=10)
-
-
-def _job_for(process: int) -> Any:
-    """Put the (still suspended) process into a kill-on-close job; None if that is refused."""
-    job = _kernel32.CreateJobObjectW(None, None)
-    try:
-        if not job:
-            return None
-        limits = _ExtendedLimits()
-        limits.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-        configured = _kernel32.SetInformationJobObject(
-            job,
-            _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
-            ctypes.byref(limits),
-            ctypes.sizeof(limits),
-        )
-        if configured and _kernel32.AssignProcessToJobObject(job, process):
-            owned, job = job, None
-            return owned
-        return None
-    finally:
-        if job:
-            _kernel32.CloseHandle(job)

@@ -17,14 +17,14 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
-from tsw.config import DEFAULTS, EFFORTS, MODEL_ID, VERSION
+from tsw.config import DEFAULTS, EFFORTS, VERSION, valid_model_id
 from tsw.plugins.catalog import CHANNELS, HOST_INTEGRATIONS
 from tsw.review import models as reviewer_models
 from tsw.review.models import ModelList
 
 # Reviewers without a fallback (DN006 §10.2, §10.2a): ``claude -p`` and Copilot CLI started by
 # tsw. Codex keeps the configuration's default fallback.
-NO_FALLBACK = frozenset({"claude-headless", "copilot-cli"})
+NO_FALLBACK = frozenset({"claude-headless", "copilot-cli", "pi-cli"})
 # The model questions depend on the reviewer answer: their choices are the chosen reviewer's
 # models on this machine (DN004 §3.4).
 MODEL_QUESTIONS = ("reviewer_model", "reviewer_effort")
@@ -32,19 +32,21 @@ MODEL_QUESTIONS = ("reviewer_model", "reviewer_effort")
 Lister = Callable[[str], ModelList]
 # No self-review at all (DN004 §9): review.self_review is off.
 NO_REVIEW = "none"
-REVIEWERS = ("codex-app-server", "claude-headless", "copilot-cli", NO_REVIEW)
+REVIEWERS = ("codex-app-server", "claude-headless", "copilot-cli", "pi-cli", NO_REVIEW)
 # The command line each reviewer that tsw starts needs.
-COMMANDS = {"codex-app-server": "codex", "claude-headless": "claude", "copilot-cli": "copilot"}
+COMMANDS = reviewer_models.COMMANDS
 # What each choice means, shown next to its value (DN009 §16.3); a choice without one shows its
 # value only.
 CHOICE_LABELS: dict[str, str] = {
     "codex-app-server": "Codex",
     "claude-headless": "Claude（tsw 启动的 claude -p）",
     "copilot-cli": "GitHub Copilot CLI",
+    "pi-cli": "Pi CLI（一次性只读评审）",
     "none": "不做自评审",
     "in-session": "只在会话中",
     "teams-chat": "另加 Teams 自聊",
     "claude-code": "Claude Code",
+    "pi": "pi（Linux / WSL，worker 为 pi --mode rpc）",
 }
 SHORT_NAMES: dict[str, str] = {
     "home": "数据目录",
@@ -209,6 +211,8 @@ def reviewer_warning(env: Mapping[str, str], reviewer: str | None = None) -> str
     command = COMMANDS.get(name)
     if command is None or shutil.which(command, path=env.get("PATH")):
         return None
+    if command == "pi":
+        return "pi：找不到 Pi CLI；请先安装 pi 并配置模型提供方，否则任务完成不了自评审"
     if command == "copilot":
         return (
             "copilot：找不到 GitHub Copilot CLI。选择的评审器 copilot-cli 需要已登录的 copilot "
@@ -226,6 +230,23 @@ def reviewer_warning(env: Mapping[str, str], reviewer: str | None = None) -> str
         "（例如 npm install -g @openai/codex，再 codex login），否则任务完成不了自评审。"
         "安装可以照常完成，之后装好 Codex 即可；也可以改选 claude-headless 或 copilot-cli"
     )
+
+
+def usable_hosts(env: Mapping[str, str]) -> tuple[str, ...]:
+    """The hosts offered: Claude Code always (its app may be found later), pi when this machine
+    has it (PI001 §8). With one, it is chosen without asking, as before pi."""
+    from tsw.host.pi_install import find_pi  # noqa: PLC0415
+
+    return HOST_INTEGRATIONS if find_pi(env) else HOST_INTEGRATIONS[:1]
+
+
+def default_host(env: Mapping[str, str]) -> str:
+    """Claude Code, unless this machine has pi and no claude command line (PI001 §8)."""
+    from tsw.host.pi_install import find_pi  # noqa: PLC0415
+
+    if shutil.which("claude", path=env.get("PATH")) is None and find_pi(env):
+        return "pi"
+    return HOST_INTEGRATIONS[0]
 
 
 def workdeck_found(env: Mapping[str, str]) -> bool:
@@ -252,7 +273,7 @@ def questions(env: Mapping[str, str], checkout: Path) -> list[Question]:
             default=str(checkout),
             asked_by="entry",
             note="由入口在运行 tsw setup 之前决定：终端入口"
-            "为 setup.ps1 所在的检出，会话入口由取检出"
+            "为 setup.ps1 或 setup.sh 所在的检出，会话入口由取检出"
             "脚本克隆到固定位置；tsw setup 使用运行它的检出",
         ),
         Question(
@@ -272,6 +293,7 @@ def questions(env: Mapping[str, str], checkout: Path) -> list[Question]:
             note="codex-app-server：Codex（需要已登录的 codex 命令行）；"
             "claude-headless：tsw 启动的只读 claude -p（需要已登录的 claude 命令行）；"
             "copilot-cli：GitHub Copilot CLI（需要已登录的 copilot 命令行）；"
+            "pi-cli：Pi CLI（需要已配置模型提供方的 pi 命令行）；"
             "none：不做自评审（review.self_review 为 off，DN004 §9）",
         ),
         Question(
@@ -305,9 +327,10 @@ def questions(env: Mapping[str, str], checkout: Path) -> list[Question]:
             "宿主",
             "choice",
             "plugins.host_integration、plugins.sessions",
-            default=HOST_INTEGRATIONS[0],
-            choices=HOST_INTEGRATIONS,
-            note="只有一个已实现的宿主时直接选定，不必问",
+            default=default_host(env),
+            choices=usable_hosts(env),
+            note="claude-code：Claude Code 桌面 app；pi：终端中的 pi（PI001，本机有 pi 时才可选）。"
+            "只有一个可选时直接选定，不必问；找不到 claude 而找到 pi 时默认 pi",
         ),
         Question(
             "dashboard",
@@ -374,7 +397,9 @@ def normalize(answers: Mapping[str, Any], qs: list[Question]) -> tuple[dict[str,
             value = q.default
         if q.id in MODEL_QUESTIONS and value is None:
             continue  # not answered: the reviewer's default model and effort (DN004 §3.4)
-        if q.id == "reviewer_model" and not MODEL_ID.match(str(value).strip()):
+        if q.id == "reviewer_model" and not valid_model_id(
+            answers.get("reviewer"), str(value).strip()
+        ):
             problems.append(f"{q.id}：模型 ID 格式不正确（{value}）")
             continue
         if q.id == "reviewer_effort" and str(value).strip() not in EFFORTS:
@@ -442,6 +467,12 @@ def config_layer(answers: Mapping[str, Any]) -> dict[str, Any]:
         layer["roles"] = {"reviewer": chosen}
     elif reviewer == NO_REVIEW:
         layer["review"] = {"self_review": "off"}
+    if answers["host"] == "pi":
+        # pi's own adapters, its own default model, and no routine session (PI001 §5.5, §7).
+        roles: dict[str, Any] = layer.setdefault("roles", {})
+        roles["orchestrator"] = {"session": "pi-tui", "model": "default"}
+        roles["worker"] = {"session": "pi-rpc", "model": "default"}
+        layer["routine"] = {"enabled": False}
     return layer
 
 

@@ -29,15 +29,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from tsw.config import CLAUDE_ALIASES, DEFAULTS, EFFORTS, MODEL_ID
+from tsw.config import CLAUDE_ALIASES, DEFAULTS, EFFORTS, MODEL_ID, valid_model_id
 from tsw.errors import ErrorCode, TswError
-from tsw.review import claude
+from tsw.review import claude, pi
 from tsw.review.codex import AppServer
 from tsw.review.process import ProcessTree
 
 TIMEOUT = 60  # seconds a host gets to answer (DN004 §3.4)
 # The command line each reviewer is listed with (and reviews with).
-COMMANDS = {"codex-app-server": "codex", "claude-headless": "claude", "copilot-cli": "copilot"}
+COMMANDS = {
+    "codex-app-server": "codex",
+    "claude-headless": "claude",
+    "copilot-cli": "copilot",
+    "pi-cli": "pi",
+}
 # What each reviewer is offered first when its list has it, and suggested when there is no list
 # (DN004 §3.4): Codex keeps the configuration's own default.
 BUILTIN: dict[str, tuple[str, str]] = {
@@ -47,6 +52,7 @@ BUILTIN: dict[str, tuple[str, str]] = {
     ),
     "claude-headless": ("claude-sonnet-5-5", "high"),
     "copilot-cli": ("gpt-6.1-sol", "medium"),
+    "pi-cli": ("openai/gpt-5.4", "medium"),
 }
 # Entries that are not one fixed model: Copilot's ``auto`` picks a model per request, Claude's
 # ``default`` follows the user's default model; a review must use exactly the configured model.
@@ -90,6 +96,8 @@ class ModelList:
         reviewers compare models (no ``[1m]`` suffix, case and ``.`` / ``-`` ignored)."""
         if not model:
             return None
+        if self.reviewer == "pi-cli":
+            return next((entry for entry in self.models if model == entry.id), None)
         wanted = canonical(model)
         for entry in self.models:
             if wanted == canonical(entry.id):
@@ -375,10 +383,49 @@ def _claude(executable: str, timeout: float) -> ModelList:
             reader.join(timeout=5)
 
 
+def _pi(executable: str, timeout: float) -> ModelList:
+    with tempfile.TemporaryDirectory(prefix="tsw-models-") as folder:
+        tree = ProcessTree(
+            [executable, *pi.ISOLATE, "--list-models"],
+            cwd=folder,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        try:
+            output, _ = tree.proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            raise TimeoutError from exc
+        finally:
+            tree.end()
+            if tree.proc.stdout:
+                tree.proc.stdout.close()
+    found = ModelList("pi-cli")
+    if tree.proc.returncode != 0:
+        found.error = "pi --list-models 失败；请核对 Pi CLI 版本与提供方配置"
+        return found
+    header = False
+    for line in output.splitlines():
+        fields = line.split()
+        if fields[:2] == ["provider", "model"]:
+            header = True
+        elif header and len(fields) == 6 and fields[-1] in ("yes", "no"):
+            model = "/".join(fields[:2])
+            if valid_model_id("pi-cli", model):
+                found.models.append(
+                    Model(model)
+                )  # Pi lists reasoning yes/no, not per-model levels.
+    return found
+
+
 LISTERS: dict[str, Callable[[str, float], ModelList]] = {
     "codex-app-server": _codex,
     "claude-headless": _claude,
     "copilot-cli": _copilot,
+    "pi-cli": _pi,
 }
 
 
@@ -513,7 +560,7 @@ def choose(
     notes: list[str] = []
     model = model.strip()
     effort = effort.strip()
-    if not MODEL_ID.match(model):
+    if not valid_model_id(found.reviewer, model):
         raise TswError(
             ErrorCode.REJECTED, "模型 ID 格式不正确", reason="invalid_input", model=model
         )

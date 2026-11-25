@@ -23,6 +23,11 @@ from tsw.home import Home, workdir_path
 from tsw.machine.model import row_dict
 
 SESSION_ENV = "CLAUDE_CODE_HOST_SESSION_ID"
+# The host-neutral name a host integration sets for tsw (PI001 §4.1), and pi's own: pi gives its
+# bash tool the session's ID; tsw's references to pi sessions carry the ``pi:`` prefix.
+TSW_SESSION_ENV = "TSW_SESSION_ID"
+PI_SESSION_ENV = "PI_SESSION_ID"
+PI_PREFIX = "pi:"
 WORKER_PHASES = frozenset({"live", "standby", "stopped"})
 # The only ``tsw`` commands a host session may run on the command line; everything that writes
 # the ledger goes through the MCP server, where the caller is the session itself (DN001 §7.1).
@@ -50,6 +55,16 @@ HOST_CLI_COMMANDS = frozenset(
         # questions with ``setup models``. ``reviewer set`` is the user's own (DN006 §8.10).
         "setup models",
         "reviewer models",
+        # The pi extension's commands (PI001): each resolves its caller from the session itself;
+        # ``pi chat`` is the user's own and refused in any session.
+        "pi serve",
+        "pi whoami",
+        "pi start",
+        "pi send",
+        "pi stop",
+        "pi list",
+        "pi poll",
+        "pi guard",
     }
 )
 # The main session updates itself (T282, CC008 §5.7): inside a session only the orchestrator role
@@ -64,6 +79,15 @@ MAIN_SESSION_CLI_COMMANDS = frozenset({"host render", "dashboard restart"})
 # session (upgrade, repair, uninstall) may run these, including the Dashboard registration and the
 # render inside them; a worker, the routine session, a revoked or a pending session may not.
 SETUP_CLI_COMMANDS = frozenset({"setup install", "setup uninstall"})
+
+
+def session_of(env: Mapping[str, str]) -> str | None:
+    """The calling session's ID: ``TSW_SESSION_ID``, else Claude Code's, else pi's (prefixed)."""
+    explicit = env.get(TSW_SESSION_ENV) or env.get(SESSION_ENV)
+    if explicit:
+        return explicit
+    pi = env.get(PI_SESSION_ENV)
+    return PI_PREFIX + pi if pi else None
 
 
 def _norm(path: Path) -> str:
@@ -108,7 +132,7 @@ class Identity:
 
 
 def resolve(conn: sqlite3.Connection, home: Home, env: Mapping[str, str], cwd: Path) -> Identity:
-    session = env.get(SESSION_ENV) or None
+    session = session_of(env)
     if session:
         row = row_dict(
             conn.execute(

@@ -18,7 +18,7 @@ import pytest
 
 from tests.component.test_review_run import HIGH, WORKER, git_repo, live_worker, result
 from tests.machine_harness import Harness
-from tests.support import REPO_ROOT
+from tests.support import REPO_ROOT, stand_in
 from tsw import config as config_module
 from tsw.config import load_config
 from tsw.errors import TswError
@@ -59,8 +59,7 @@ def commit(workdir: Path, name: str) -> None:
 
 
 def fake_claude(tmp_path: Path, answers: list[Any], monkeypatch: pytest.MonkeyPatch) -> Path:
-    wrapper = tmp_path / "claude.cmd"
-    wrapper.write_text(f'@"{sys.executable}" "{FAKE_CLAUDE}" %*\r\n', encoding="utf-8")
+    wrapper = stand_in(tmp_path / "claude", FAKE_CLAUDE)
     (tmp_path / "claude-answers.json").write_text(json.dumps(answers), encoding="utf-8")
     monkeypatch.setenv("FAKE_REVIEWER_ANSWERS", str(tmp_path / "claude-answers.json"))
     monkeypatch.setenv("FAKE_REVIEWER_LOG", str(tmp_path / "claude.log"))
@@ -211,11 +210,8 @@ def test_the_reviewer_environment_drops_the_hosts_variables() -> None:
 
 
 def test_a_claude_run_past_its_time_is_ended(tmp_path: Path) -> None:
-    wrapper = tmp_path / "claude.cmd"
     stubborn = REPO_ROOT / "tests" / "fixtures" / "stubborn_server.py"
-    wrapper.write_text(
-        f'@"{sys.executable}" "{stubborn}" "{tmp_path / "pid"}"\r\n', encoding="utf-8"
-    )
+    wrapper = stand_in(tmp_path / "claude", stubborn, tmp_path / "pid", forward=False)
     run = claude.run_review(
         "p", cwd=tmp_path, model="m", effort="high", timeout_seconds=3, executable=str(wrapper)
     )
@@ -285,8 +281,7 @@ def test_the_removed_subagent_cannot_be_configured(home: Home) -> None:
 
 
 def fake_copilot(tmp_path: Path, answers: list[Any], monkeypatch: pytest.MonkeyPatch) -> Path:
-    wrapper = tmp_path / "copilot.cmd"
-    wrapper.write_text(f'@"{sys.executable}" "{FAKE}" %*\r\n', encoding="utf-8")
+    wrapper = stand_in(tmp_path / "copilot", FAKE)
     (tmp_path / "answers.json").write_text(json.dumps(answers), encoding="utf-8")
     monkeypatch.setenv("FAKE_COPILOT_ANSWERS", str(tmp_path / "answers.json"))
     monkeypatch.setenv("FAKE_COPILOT_LOG", str(tmp_path / "copilot.log"))
@@ -386,11 +381,8 @@ def test_the_recorded_copilot_output_is_read_as_the_cli_wrote_it() -> None:
 def test_a_copilot_run_past_its_time_is_ended(
     home: Home, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    wrapper = tmp_path / "copilot.cmd"
     stubborn = REPO_ROOT / "tests" / "fixtures" / "stubborn_server.py"
-    wrapper.write_text(
-        f'@"{sys.executable}" "{stubborn}" "{tmp_path / "pid"}"\r\n', encoding="utf-8"
-    )
+    wrapper = stand_in(tmp_path / "copilot", stubborn, tmp_path / "pid", forward=False)
     run = copilot.run_review(
         "p", cwd=tmp_path, model="m", effort="medium", timeout_seconds=3, executable=str(wrapper)
     )
@@ -544,8 +536,7 @@ def test_an_open_round_is_finished_by_the_reviewer_that_opened_it(
     failed = review(h, workdir)
     assert failed["outcome"] == "review.failed"
     # The command line configured now is not Copilot's: the round keeps the one it ran with.
-    other = tmp_path / "not-copilot.cmd"
-    other.write_text("@exit 9\r\n", encoding="utf-8")
+    other = stand_in(tmp_path / "not-copilot", "-c", "raise SystemExit(9)", forward=False)
     claude_reviewer = {"session": "claude-headless", "model": "haiku", "executable": str(other)}
     Harness(home, {"roles": {"reviewer": claude_reviewer}})
     retried = review(h, workdir)

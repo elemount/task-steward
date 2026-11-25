@@ -1,0 +1,10 @@
+{
+  "name": "task-steward-pi",
+  "private": true,
+  "version": "0.1.0",
+  "description": "TaskSteward for pi: tsw tools, guardrails and worker sessions (docs/design/pi/PI001)",
+  "type": "module",
+  "pi": {
+    "extensions": ["./extension/index.ts"]
+  }
+}

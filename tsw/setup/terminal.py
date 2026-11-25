@@ -269,6 +269,8 @@ class WindowsConsole:
         self.out = out
 
     def key(self) -> str:
+        if sys.platform != "win32":
+            raise RuntimeError("WindowsConsole reads keys on Windows only")
         import msvcrt  # noqa: PLC0415  (Windows only)
 
         try:

@@ -2,7 +2,7 @@
 
 - 状态：设计草案（T233 r5，已按 PoC 结果修订）
 - 日期：2026-11-05
-- 相关：[DN002 任务状态机](DN002-task-state-machine.md) · [DN003 统一配置](DN003-unified-config.md) · [DN004 worker 自评审](DN004-worker-self-review.md) · [DN005 历史导入与 resume](DN005-history-import-and-resume.md) · [DN006 插件层](DN006-plugin-layer.md) · [DN007 账本与上下文检索](DN007-ledger-and-context.md) · [DN008 校验原则](DN008-guardrails.md) · 实现：[CC001 Claude Code 上的会话与 hooks](claude-code/CC001-sessions-and-hooks.md)
+- 相关：[DN002 任务状态机](DN002-task-state-machine.md) · [DN003 统一配置](DN003-unified-config.md) · [DN004 worker 自评审](DN004-worker-self-review.md) · [DN005 历史导入与 resume](DN005-history-import-and-resume.md) · [DN006 插件层](DN006-plugin-layer.md) · [DN007 账本与上下文检索](DN007-ledger-and-context.md) · [DN008 校验原则](DN008-guardrails.md) · 实现：[CC001 Claude Code 上的会话与 hooks](claude-code/CC001-sessions-and-hooks.md) · Pi 上的实现（提议）：[PI001](pi/PI001-host-and-sessions.md)
 
 ## 1. 背景
 

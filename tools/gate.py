@@ -46,7 +46,8 @@ from tsw.machine.runner import tool_names  # noqa: E402
 STEPS = ("lint", "stdlib", "docs", "catalog-static", "tests", "catalog")
 DEFAULT_STEPS = ("lint", "stdlib", "docs", "tests", "catalog")
 # The CI stages (tools/scope.json), the summary steps each stage's evidence must have passed, and
-# which artifacts belong to a stage: ``test`` runs once per Python version (``test-<version>``).
+# which artifacts belong to a stage: ``test`` runs once per Python version on Windows
+# (``test-<version>``) and once on Linux (``test-linux-<version>``).
 STAGE_STEPS = {
     "lint": ("lint", "stdlib"),
     "docs": ("docs", "catalog-static"),
@@ -484,7 +485,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--needs-json", default=os.environ.get("NEEDS", "{}"), help="默认读取环境变量 NEEDS"
     )
-    parser.add_argument("--expect", default="lint,docs,test-3.10,test-3.13")
+    parser.add_argument("--expect", default="lint,docs,test-3.10,test-3.13,test-linux-3.13")
     args = parser.parse_args(argv)
     if args.verify_ci:
         return verify_ci(Path(args.verify_ci), args.needs_json, args.expect.split(","))

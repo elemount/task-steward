@@ -12,12 +12,16 @@ writes the executed coverage report. ``check`` runs both. The check fails when:
 5. a CLI command or tool is not claimed by an active use case, or a claim names nothing;
 6. a required test was skipped, not run or failed in this run;
 7. the transition list and the DN002 tables disagree.
+
+A use case may name the ``platforms`` it exists on (``windows``, ``posix``); on another platform
+its tests are not collected, and its tiers are reported as not verified instead of failing.
 """
 
 from __future__ import annotations
 
 import json
 import re
+import sys
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, cast
@@ -28,6 +32,11 @@ UC_ID = re.compile(r"^UC-[A-Z]+-\d{3}$")
 DN002_ROW = re.compile(r"^\| (T\d\d|E\d\d|I\d\d|G-[A-Z-]+) \|")
 UC_TEXT_FIELDS = ("id", "title", "actor", "acceptance", "component", "status")
 TRANSITION_TEXT_FIELDS = ("id", "kind", "status")
+PLATFORMS = ("windows", "posix")
+
+
+def this_platform() -> str:
+    return "windows" if sys.platform == "win32" else "posix"
 
 
 def _load(path: Path) -> Any:
@@ -90,6 +99,13 @@ def _validate_use_case(entry: Mapping[str, Any], label: str) -> list[str]:
         unknown = [s for s in cast("list[Any]", surfaces) if s not in SURFACES]
         if unknown:
             problems.append(f"{label}: surfaces 中有未知取值 {unknown}")
+    platforms: object = entry.get("platforms", list(PLATFORMS))
+    if (
+        not isinstance(platforms, list)
+        or not platforms
+        or any(p not in PLATFORMS for p in cast("list[Any]", platforms))
+    ):
+        problems.append(f"{label}: platforms 须为 {list(PLATFORMS)} 中取值的非空列表")
     for field, kind in (("claims", list), ("requiredTiers", list), ("omittedTiers", dict)):
         if not isinstance(entry.get(field), kind):
             problems.append(f"{label}: 缺少字段 {field} 或类型不对")
@@ -221,7 +237,14 @@ def check_coverage(
         section = report["useCases" if key == "use_cases" else "transitions"]
         tiers: dict[str, Any] = {}
         section[ident] = {"requiredTiers": required, "tiers": tiers}
+        use_case: Mapping[str, Any] = catalog.use_cases.get(ident, {}) if key == "use_cases" else {}
+        platforms: list[str] = list(use_case.get("platforms", PLATFORMS))
+        elsewhere = this_platform() not in platforms
         for tier in required:
+            if elsewhere and tier != "live":
+                tiers[tier] = {"status": "other_platform"}
+                not_verified.append(f"{ident}: 只在 {platforms} 上测试（{tier}）")
+                continue
             if tier == "live":
                 tiers[tier] = {"status": "scenario" if _live_scenarios(root, ident) else "missing"}
                 continue

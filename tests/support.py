@@ -17,6 +17,24 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 TEST_ACTOR = {"role": "cli"}
 
 
+def stand_in(command: Path, *args: str | Path, forward: bool = True) -> Path:
+    """A command that runs this interpreter with ``args`` (and, with ``forward``, the arguments
+    it was given): ``<name>.cmd`` on Windows, an executable sh script elsewhere. ``command`` may
+    carry the ``.cmd`` suffix or not; returns the file written."""
+    name = command.name.removesuffix(".cmd")
+    if sys.platform == "win32":
+        target = command.with_name(name + ".cmd")
+        line = " ".join(f'"{a}"' for a in (sys.executable, *args))
+        target.write_text(f"@{line}{' %*' if forward else ''}\r\n", encoding="utf-8")
+        return target
+    target = command.with_name(name)
+    line = " ".join(f'"{a}"' for a in (sys.executable, *args))
+    rest = ' "$@"' if forward else ""
+    target.write_text("#!/bin/sh\nexec " + line + rest + "\n", encoding="utf-8")
+    target.chmod(0o755)
+    return target
+
+
 def spec(**overrides: Any) -> TaskSpec:
     values: dict[str, Any] = {
         "title": "示例任务",
@@ -45,10 +63,13 @@ def child_env(**extra: str) -> dict[str, str]:
     return env
 
 
-def run_tsw(*args: str, env: dict[str, str] | None = None, cwd: Path | None = None) -> Any:
+def run_tsw(
+    *args: str, env: dict[str, str] | None = None, cwd: Path | None = None, stdin: str = ""
+) -> Any:
     """Run the CLI as a separate process; returns the completed process."""
     return subprocess.run(
         [sys.executable, "-m", "tsw", *args],
+        input=stdin,
         capture_output=True,
         text=True,
         encoding="utf-8",

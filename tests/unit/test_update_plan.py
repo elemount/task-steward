@@ -26,6 +26,8 @@ CLAUDE_CODE_NEW = 'X = 2\nCLAUDE_MD = """# 数据目录\n- 先读 tsw-update。\
         ("README.html", ["docs"]),
         ("pyproject.toml", ["install"]),
         ("setup.ps1", ["install"]),
+        ("setup.sh", ["install"]),
+        ("pi/extension/index.ts", ["runtime"]),
         ("tsw/setup/steps.py", ["install"]),
         ("plugin/setup/prereq.ps1", ["plugin"]),
         ("plugin/skills/setup/SKILL.md", ["plugin"]),

@@ -254,3 +254,22 @@ def test_the_coverage_report_lists_the_tests_of_each_tier(tmp_path: Path) -> Non
             }
         },
     }
+
+
+def test_a_use_case_of_another_platform_is_not_verified_here(tmp_path: Path) -> None:
+    here = catalog.this_platform()
+    there = next(p for p in catalog.PLATFORMS if p != here)
+    root = _repo(
+        tmp_path,
+        [_use_case(), _use_case("UC-DEMO-002", claims=[], platforms=[there])],
+    )
+    problems, not_verified, report = catalog.check_coverage(root, GOOD_RESULTS, {"unit"})
+    assert problems == []
+    assert report["useCases"]["UC-DEMO-002"]["tiers"]["unit"] == {"status": "other_platform"}
+    assert any(n.startswith("UC-DEMO-002") for n in not_verified)
+    # On its own platform it needs its tests like any other use case.
+    root = _repo(tmp_path / "own", [_use_case(), _use_case("UC-DEMO-002", platforms=[here])])
+    problems, _nv, _report = catalog.check_coverage(root, GOOD_RESULTS, {"unit"})
+    assert problems == ["UC-DEMO-002: use case 要求的 unit 层级没有通过的测试"]
+    bad = _repo(tmp_path / "bad", [_use_case(platforms=["mac"])])
+    assert any("platforms" in p for p in _static(bad))

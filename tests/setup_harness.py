@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from tests.support import REPO_ROOT
+from tests.support import REPO_ROOT, stand_in
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 GIT_ENV = {
@@ -48,7 +48,9 @@ def make_product(tmp_path: Path, name: str = "product") -> Path:
     shutil.copytree(REPO_ROOT / "tsw", repo / "tsw", ignore=ignore)
     shutil.copytree(REPO_ROOT / "plugin", repo / "plugin", ignore=ignore)
     shutil.copytree(REPO_ROOT / ".claude-plugin", repo / ".claude-plugin")
+    shutil.copytree(REPO_ROOT / "pi", repo / "pi", ignore=ignore)
     shutil.copyfile(REPO_ROOT / "setup.ps1", repo / "setup.ps1")
+    shutil.copy2(REPO_ROOT / "setup.sh", repo / "setup.sh")
     (repo / ".gitignore").write_text(".local/\n", encoding="utf-8")
     git(repo, "init", "-q", "-b", "main")
     for key, value in (("core.autocrlf", "false"), ("core.safecrlf", "false")):
@@ -63,9 +65,7 @@ def fake_claude(tmp_path: Path) -> Path:
     bin_dir = tmp_path / "claude-bin"
     bin_dir.mkdir(exist_ok=True)
     script = FIXTURES / "fake_claude_plugins.py"
-    command = bin_dir / "claude.cmd"
-    command.write_text(f'@"{sys.executable}" "{script}" %*\r\n', encoding="utf-8")
-    return command
+    return stand_in(bin_dir / "claude", script)
 
 
 def claude_calls(tmp_path: Path) -> list[str]:
@@ -79,6 +79,11 @@ def setup_env(tmp_path: Path, **extra: str) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if k not in ("TSW_HOME", "PYTHONPATH")}
     env["FAKE_CLAUDE_LOG"] = str(tmp_path / "claude.log")
     env["PYTHONUTF8"] = "1"
+    if sys.platform != "win32":
+        # Where the install links ``tsw`` (``~/.local/bin``) is on a usual user's PATH; the
+        # install never changes PATH on Linux (DN009 §12).
+        shims = str(Path(env["HOME"]) / ".local" / "bin")
+        env["PATH"] = os.pathsep.join([shims, env.get("PATH", "")])
     env.update(extra)
     return env
 
@@ -162,9 +167,7 @@ def fake_workdeck(tmp_path: Path, env: dict[str, str]) -> Path:
     bin_dir = tmp_path / "workdeck-bin"
     bin_dir.mkdir(exist_ok=True)
     script = FIXTURES / "fake_workdeck.py"
-    (bin_dir / "workdeck.cmd").write_text(
-        f'@"{sys.executable}" "{script}" %*\r\n', encoding="utf-8"
-    )
+    stand_in(bin_dir / "workdeck", script)
     config = tmp_path / "workdeck" / "workdeck.json"
     env["FAKE_WORKDECK_LOG"] = str(tmp_path / "workdeck.log")
     env["FAKE_WORKDECK_CONFIG"] = str(config)

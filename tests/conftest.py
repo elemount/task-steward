@@ -26,10 +26,11 @@ from typing import Any
 
 import pytest
 
+from tests.support import stand_in
 from tsw.home import Home, claiming_home, init_home
 from tsw.ledger import Ledger
 
-SCRUBBED_PREFIXES = ("CLAUDE", "ANTHROPIC", "CODEX")
+SCRUBBED_PREFIXES = ("CLAUDE", "ANTHROPIC", "CODEX", "PI_", "TSW_SESSION")
 RESULTS_ENV = "TSW_RESULTS_FILE"
 TIERS = ("unit", "component", "surface", "conformance")
 FAKE_SCHTASKS = Path(__file__).resolve().parent / "fixtures" / "fake_schtasks.py"
@@ -38,17 +39,21 @@ FAKE_MODEL_LISTS = Path(__file__).resolve().parent / "fixtures" / "fake_model_li
 
 @functools.lru_cache(maxsize=8)
 def without_workdeck(path: str) -> str:
-    """``path`` without the folders that hold a ``workdeck`` command.
+    """``path`` without the folders that hold a ``workdeck`` or ``pi`` command.
 
     Cached per ``PATH`` value: the autouse fixture calls it for every test, and checking every
     folder of a long ``PATH`` each time costs hundreds of file lookups per test (T317).
     """
-    names = ("workdeck", "workdeck.cmd", "workdeck.exe", "workdeck.ps1")
-    kept = [
-        folder
-        for folder in path.split(os.pathsep)
-        if not (folder and any((Path(folder) / name).is_file() for name in names))
-    ]
+    # The real pi too (PI001): a test that needs one puts tests/fixtures/fake_pi.py there.
+    names = ("workdeck", "workdeck.cmd", "workdeck.exe", "workdeck.ps1", "pi", "pi.cmd", "pi.exe")
+
+    def has_workdeck(folder: str) -> bool:
+        try:
+            return any((Path(folder) / name).is_file() for name in names)
+        except OSError:  # a folder this user cannot read (WSL's Windows folders): no workdeck
+            return False
+
+    kept = [folder for folder in path.split(os.pathsep) if not (folder and has_workdeck(folder))]
     return os.pathsep.join(kept)
 
 
@@ -59,9 +64,7 @@ def reviewer_bin(tmp_path_factory: pytest.TempPathFactory) -> Path:
     reviewer's models never starts the real command lines (or reads the user's own login)."""
     folder = tmp_path_factory.mktemp("reviewer-bin")
     for name in ("codex", "copilot"):
-        (folder / f"{name}.cmd").write_text(
-            f'@"{sys.executable}" "{FAKE_MODEL_LISTS}" %*\r\n', encoding="utf-8"
-        )
+        stand_in(folder / name, FAKE_MODEL_LISTS)
     return folder
 
 
@@ -175,6 +178,14 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    # Behaviour of one platform only (Windows: the registry Path, .cmd shims, Git Bash drive
+    # paths; POSIX: the pi host) is not collected on the other: neither run nor counted as
+    # skipped (testing-layers.md).
+    other = "windows" if sys.platform != "win32" else "posix"
+    dropped = [item for item in items if item.get_closest_marker(other)]
+    if dropped:
+        config.hook.pytest_deselected(items=dropped)
+        items[:] = [item for item in items if not item.get_closest_marker(other)]
     recorder = config.stash.get(_RECORDER_KEY, None)
     if recorder is None:
         return

@@ -35,6 +35,7 @@ CLAUDE_ALIASES = ("sonnet", "opus", "haiku", "fable")
 # Session adapters an earlier version had and this one removed, with what to use instead.
 REMOVED_SESSIONS = {"claude-subagent": "claude-headless"}
 MODEL_ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
+PI_MODEL_ID = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9._-]*(?:/[a-zA-Z0-9][a-zA-Z0-9._-]*)+")
 REPOSITORY_SLUG = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 # Fields a machine-local override may set (DN003 §5); ``*`` matches one map key.
 LOCAL_WHITELIST = (
@@ -73,6 +74,9 @@ DEFAULTS: dict[str, Any] = {
             "codex-app-server",
             "codex-exec",
             "copilot-cli",
+            "pi-cli",
+            "pi-tui",
+            "pi-rpc",
         ],
         "human_channels": ["in-session"],
         "storage": {"use": "fs"},
@@ -591,7 +595,8 @@ def _validate(config: EffectiveConfig, home: Home) -> None:
     # Rule 2: model ids and efforts.
     for role in ("orchestrator", "worker", "reviewer", "routine"):
         model = get(values, f"roles.{role}.model")
-        if isinstance(model, str) and not MODEL_ID.match(model):
+        session = get(values, f"roles.{role}.session")
+        if isinstance(model, str) and not valid_model_id(session, model):
             problems.append(f"roles.{role}.model: 模型 ID 格式不正确")
 
     # Rule 3: a worker never runs with more permission than the orchestrator.
@@ -631,6 +636,36 @@ def _validate(config: EffectiveConfig, home: Home) -> None:
     _validate_input(values, problems, config.sources)
     _validate_paths(values, problems, home)
     _validate_repositories(values, problems, home)
+
+
+# pi names a model with its provider (``provider/model``, PI001 §5.1, PI004 §2).
+PI_SESSIONS = frozenset({"pi-cli", "pi-tui", "pi-rpc"})
+
+
+def valid_model_id(session: object, model: str) -> bool:
+    if session in PI_SESSIONS:
+        # ``default``: the model pi itself is set to (the main session and workers, PI001 §5.1).
+        return model == "default" or PI_MODEL_ID.fullmatch(model) is not None
+    return MODEL_ID.fullmatch(model) is not None
+
+
+def _validate_pi(values: dict[str, Any], problems: list[str], warnings: list[str]) -> None:
+    """The ``pi`` host integration (PI001 §5.5, §6.3, §7): its own main-session and worker
+    adapters, no routine session, and no permission modes."""
+    for role, wanted in (("orchestrator", "pi-tui"), ("worker", "pi-rpc")):
+        if get(values, f"roles.{role}.session") != wanted:
+            problems.append(f"roles.{role}.session: 宿主集成 pi 须为 {wanted}")
+    if get(values, "routine.enabled"):
+        problems.append(
+            "routine.enabled: pi 没有会话内定时任务，宿主集成 pi 须为 false（PI001 §7）"
+        )
+    if "teams-chat" in (get(values, "plugins.human_channels", []) or []):
+        problems.append("plugins.human_channels: teams-chat 依赖例行会话，宿主集成 pi 不可用")
+    if any(
+        get(values, f"roles.{role}.permission_mode") not in (None, "auto")
+        for role in ("orchestrator", "worker")
+    ):
+        warnings.append("roles.*.permission_mode: pi 没有权限模式，这些值不生效（PI001 §6.3）")
 
 
 def _validate_plugins(values: dict[str, Any], problems: list[str], warnings: list[str]) -> None:
@@ -730,6 +765,8 @@ def _validate_plugins(values: dict[str, Any], problems: list[str], warnings: lis
                 f"roles.reviewer.model: {reviewer} 的模型须为 Claude 模型 ID（claude-…）"
                 f"或别名 {'、'.join(CLAUDE_ALIASES)} 之一（CC004 §4）"
             )
+    if host == "pi":
+        _validate_pi(values, problems, warnings)
     worker_model = get(values, "roles.worker.model")
     if (
         isinstance(reviewer_model, str)

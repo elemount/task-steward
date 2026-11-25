@@ -34,6 +34,8 @@
 | CC009 Claude Code 上的安装 | [md](docs/design/claude-code/CC009-install.md) | [html](docs/design/claude-code/CC009-install.html) | 一步安装插件、改指本机检出、`/task-steward:setup`、用户设置与 auto 模式规则、Windows 入口与垫片 |
 | CX004 Codex 评审器 | [md](docs/design/codex/CX004-reviewer.md) | [html](docs/design/codex/CX004-reviewer.html) | `codex-app-server` 一次性线程与 `codex-exec` 回退 |
 | CP004 Copilot CLI 评审器 | [md](docs/design/copilot/CP004-reviewer.md) | [html](docs/design/copilot/CP004-reviewer.html) | `copilot-cli`：`copilot -p` 一次性只读评审 |
+| PI001 Pi 上的宿主集成（提议） | [md](docs/design/pi/PI001-host-and-sessions.md) | [html](docs/design/pi/PI001-host-and-sessions.html) | 以 pi 为主会话、tsw 以 `pi --mode rpc` 启动 worker、扩展转发 tsw 工具与护栏、Linux / WSL 安装 |
+| PI004 Pi CLI 评审器（提议） | [md](docs/design/pi/PI004-reviewer.md) | [html](docs/design/pi/PI004-reviewer.html) | `pi-cli`：`pi --print --mode json` 一次性只读评审 |
 
 图的结构来源是 `docs/design/diagrams/*.mmd`（状态、迁移编号与标签的权威来源），文档引用同名 `.svg`：
 
@@ -53,7 +55,7 @@
 | [测试层级](docs/development/testing-layers.md) | unit、component、surface、conformance、live 五个层级与 live 场景 |
 | [测试环境](docs/development/test-environments.md) | 临时数据目录、子进程环境隔离、live 运行清单与清理 |
 | [use-case 目录](docs/development/use-cases.md) | use case 与状态迁移清单、测试标记、目录检查 |
-| [CI](docs/development/ci.md) | GitHub Actions（Windows）、阶段与汇总检查 `Gate` |
+| [CI](docs/development/ci.md) | GitHub Actions（Windows，测试另在 Linux）、阶段与汇总检查 `Gate` |
 | [评审与合并](docs/development/review.md) | 独立评审、PR 模板、合并条件与需要用户确认的范围 |
 | [代码质量](docs/development/code-quality.md) | 警告即错误、只依赖标准库、开发依赖 |
 | [兼容性](docs/development/compatibility.md) | 账本、配置、插件接口等契约的版本规则 |
@@ -88,6 +90,23 @@ claude plugin install task-steward@task-steward
 两条路径做的事相同（`tsw setup install`）：在 `%LOCALAPPDATA%\TaskSteward\bin` 放 `tsw` 垫片并加入用户级 PATH、把插件来源指向本机检出、建好数据目录与基础配置、在 Claude Code 用户设置中写入数据目录位置（`env.TSW_HOME`）、插件使用的解释器（`env.TSW_PYTHON`）与 tsw 的 auto 模式规则（先备份）、生成主会话的说明与 skill、按你的选择登记 Dashboard 常驻服务。安装记录在 `%LOCALAPPDATA%\TaskSteward\install.json`；重跑任一路径只做缺少或不一致的部分。要管理的仓库不在安装中配置：重启后在主会话中告诉它要管理哪些仓库，由主会话逐个加入配置。之后的更新在主会话中说“更新 tsw”。卸载用 `tsw setup uninstall`：它把安装脚本改动的东西恢复原样（Dashboard 服务、用户设置、`tsw` 垫片与 PATH；插件与市场回到安装前的状态，安装前就已装好的插件保留），数据目录与产品检出永远不删。要从干净的环境重装，再删除数据目录与 `%LOCALAPPDATA%\TaskSteward`，并在 app 退出时运行 `claude plugin uninstall task-steward@task-steward` 与 `claude plugin marketplace remove task-steward`。
 
 开发者也可以在本仓库中用可编辑安装代替垫片：`python -m pip install -e .`，再 `tsw init --home <数据目录> --remember`（把数据目录记在本仓库的 `.local/tsw-home`，终端不必设置 `TSW_HOME`）；插件与用户设置的安装步骤见 `tsw host install-hint`。
+
+### 在 Linux / WSL 上：以 pi 为主 agent
+
+在 Linux 或 WSL 上也可以用 [pi](https://pi.dev) 代替 Claude Code（[PI001](docs/design/pi/PI001-host-and-sessions.md)）：主会话是终端中的交互式 `pi`，每个 worker 是 tsw 以 `pi --mode rpc` 启动的会话，由 tsw 的会话服务持有，主会话退出时照常工作。前提：Linux 版的 Python 3.10+、git 与已配置模型的 `pi`。
+
+```sh
+git clone https://github.com/flyrobin620/task-steward.git ~/.local/share/task-steward
+~/.local/share/task-steward/setup.sh
+```
+
+本机有 pi 时安装会问宿主（找不到 `claude` 时默认 pi）。安装用 `pi install` 装上产品检出中的 pi 包，把 `tsw` 链接到 `~/.local/bin/tsw`（不改你的 shell 配置；它不在 PATH 时按提示自己加入），建好数据目录并生成主会话的说明与 skill。之后：
+
+1. 打开一个新的终端，`cd <数据目录> && pi`，信任这个目录一次，它是主会话；
+2. 输入 `/skill:orchestrate` 开始主会话；
+3. 与某个 worker 直接对话（回答它的问题、追加要求）：在另一个终端运行 `tsw pi chat <任务 ID>`；无人回答的问题超时后转交主会话。
+
+pi 上没有权限模式，主会话与 worker 只受 tsw 的护栏约束；第一版没有例行会话、workdeck 与 Dashboard 常驻服务（终端中的 `tsw dashboard` 照常可用）。评审器也可以用 pi（`pi-cli`，[PI004](docs/design/pi/PI004-reviewer.md)），与宿主无关。在 Linux 上用 Claude Code 作宿主时同样运行 `setup.sh`。
 
 ### 哪些命令在哪里运行
 
@@ -130,6 +149,8 @@ tsw preference record --scope global --topic PR --text "…" [--supersedes P-4]
                                              记录一条长期偏好；改一条就是带 --supersedes 记录新的
 tsw preference revoke P-4 --reason "不再需要"  撤销一条长期偏好（历史保留）
 tsw config show  /  tsw config validate      查看 / 校验统一配置
+tsw pi chat T255                             以 pi 为宿主时：与任务的 worker 直接对话（PI001 §5.4）
+tsw pi list                                  以 pi 为宿主时：列出 pi worker 会话
 ```
 
 `tsw dashboard`（即 `tsw status serve`）打开 TaskSteward Dashboard。它只监听本机，每次启动输出一个带一次性令牌的地址并在浏览器中打开；页面与数据目录中的 `views/STATUS.html` 相同，另有按钮，报告与 PR 链接照常可点。页面有三种视图：按状态分组、按时间顺序，以及按依赖关系画出的任务流（依赖方在左、被依赖的任务在右，即从右向左完成；由 follow-up 转来的任务在来源左边；其余按最近一次业务变化越新越靠左，归档等收尾记账不改变位置；每个仓库一条泳道，每条线有自己的通道，可选折线或曲线，引用默认不显示、悬停卡片时显示）；顶部的计数卡只列出有任务的状态。筛选、视图与滚动位置在自动刷新后保留。每张卡片的「详情」打开该任务的单任务视图（`/tasks/<任务>`），列出需求与历史 revision、每个 attempt 与它的会话、提交与评审轮次、产出、依赖、问题和时间线；有会话的 attempt 带会话链接，点击在 Claude 桌面 app 中打开该会话。页首的「长期偏好」打开偏好页（`/preferences`）：按范围与主题列出你的长期偏好，带原文、来源、替代关系与撤销状态，也可以在页面上记录、替代、撤销（先确认，记为你本人的操作，与 `tsw preference` 命令相同）。按 Ctrl+C 停止。`views/STATUS.html` 仍在每次提交后生成，可以离线打开，但没有按钮。
@@ -144,7 +165,7 @@ tsw config show  /  tsw config validate      查看 / 校验统一配置
 
 在 bypass 权限模式下运行的会话会扣留 workdeck 发来的消息，等你在 app 中放行，过期后丢弃。要让它们直接收到，在 Claude Code 的用户设置（`~/.claude/settings.json`）中加 `"crossSessionInbound": "accept"`。这是 Claude Code 的设置，安装脚本不写它，会话也不会替你改（[CC001 §6.1](docs/design/claude-code/CC001-sessions-and-hooks.md)）。
 
-开发者另需安装开发工具（`pip install -r requirements-dev.txt`），并用 `python tools/gate.py` 运行本地门禁。
+开发者另需安装开发工具（`pip install -r requirements-dev.txt`），并用 `python tools/gate.py` 运行本地门禁（Windows 与 Linux / WSL 都可以；只在一个平台上存在的测试在另一个平台上不收集，见 [测试层级](docs/development/testing-layers.md)）。
 
 ## 仓库布局
 
@@ -154,6 +175,7 @@ task-steward/
   docs/development/       开发规则
   docs/decisions/         决定记录
   docs/use-cases/         use-case 目录与状态迁移清单
+  pi/                     pi 包：扩展（tsw 工具、护栏、worker 会话），以 pi 为宿主时用（PI001）
   plugin/                 Claude Code 插件：hooks、MCP 配置；roles/worker.md 是 worker 说明的唯一来源（tsw host render 把它与主会话 skill 生成在数据目录）
   tsw/                    核心库与 CLI：数据目录、存储、账本、投影、任务（逐步扩展）
   tests/                  unit / component / surface / conformance 测试

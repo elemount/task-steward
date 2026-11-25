@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="tsw-source-sha256" content="8ff2bcc3b05ea0ea89488e36b917f6084be3b008c597e96df7d92b9bb94552d7">
+<title>PI004 Pi CLI 评审器</title>
+<style>
+:root{--fg:#1f2430;--muted:#5b6475;--line:#d9dee8;--accent:#3b5bdb;--bg-soft:#f6f8fc;--code:#f3f4f8}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.7 "Segoe UI","Microsoft YaHei",sans-serif;color:var(--fg);background:#fff}
+.layout{display:grid;grid-template-columns:260px minmax(0,1fr);max-width:1400px;margin:0 auto}
+nav.toc{position:sticky;top:0;align-self:start;max-height:100vh;overflow:auto;padding:28px 18px;border-right:1px solid var(--line);font-size:13px}
+nav.toc h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0 0 8px}
+nav.toc a{display:block;color:var(--fg);text-decoration:none;padding:2px 0}
+nav.toc a.l3{padding-left:14px;color:var(--muted)}
+nav.toc a:hover{color:var(--accent)}
+main{padding:32px 48px 64px;min-width:0}
+h1{font-size:28px;margin:0 0 16px;border-bottom:3px solid var(--accent);padding-bottom:10px}
+h2{font-size:21px;margin:36px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+h3{font-size:17px;margin:26px 0 10px}
+h4{font-size:15px;margin:20px 0 8px}
+a{color:var(--accent)}
+code{font-family:Consolas,"Cascadia Mono",monospace;font-size:13px;background:var(--code);padding:1px 5px;border-radius:4px}
+pre{background:#1e2230;color:#e8eaf2;padding:14px 16px;border-radius:8px;overflow:auto;line-height:1.5}
+pre code{background:none;padding:0;color:inherit}
+table{border-collapse:collapse;width:100%;margin:12px 0 18px;font-size:13.5px;display:block;overflow-x:auto}
+th,td{border:1px solid var(--line);padding:6px 9px;text-align:left;vertical-align:top}
+th{background:var(--bg-soft);white-space:nowrap}
+tr:nth-child(even) td{background:#fbfcfe}
+blockquote{margin:12px 0;padding:8px 16px;border-left:4px solid var(--accent);background:var(--bg-soft)}
+figure{margin:18px 0 8px;padding:12px;border:1px solid var(--line);border-radius:10px;background:#fff}
+figure svg{display:block;width:100%;height:auto;max-height:none}
+figcaption{font-size:13px;color:var(--muted);margin-top:6px;display:flex;justify-content:space-between;gap:12px}
+.meta{color:var(--muted);font-size:13px}
+footer{margin-top:48px;color:var(--muted);font-size:12px;border-top:1px solid var(--line);padding-top:10px}
+@media (max-width:900px){.layout{grid-template-columns:1fr}nav.toc{position:static;max-height:none;border-right:0;border-bottom:1px solid var(--line)}main{padding:20px}}
+@media print{nav.toc{display:none}.layout{display:block}main{padding:0}a{color:inherit;text-decoration:none}
+ pre{white-space:pre-wrap;background:#f3f4f8;color:#111}figure,table,pre{break-inside:avoid}h2,h3{break-after:avoid}
+ body{font-size:11pt}@page{margin:16mm 14mm}}
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="toc"><h2>目录</h2><a class="l2" href="#1-范围">1. 范围</a><a class="l2" href="#2-调用约定">2. 调用约定</a><a class="l2" href="#3-结果判定">3. 结果判定</a><a class="l2" href="#4-列出可用模型dn004-34">4. 列出可用模型（DN004 §3.4）</a><a class="l2" href="#5-能力声明">5. 能力声明</a><a class="l2" href="#6-验证">6. 验证</a></nav>
+<main>
+<h1>PI004 Pi CLI 评审器</h1>
+<ul><li>状态：设计草案（待用户确认）</li><li>日期：2026-11-25</li><li>实现：<a href="../DN004-worker-self-review.html">DN004 worker 自评审</a> · 能力声明：<a href="../DN006-plugin-layer.html">DN006 §7.3</a> · 宿主集成：<a href="PI001-host-and-sessions.html">PI001</a></li></ul>
+<h2 id="1-范围">1. 范围</h2>
+<p>会话适配器 <code>pi-cli</code>：每轮由 tsw 启动一次 <code>pi --print --mode json</code>，等它结束，从 JSONL 事件中读回最终回复。它只做评审，可以与任何宿主的主会话和 worker 搭配。</p>
+<h2 id="2-调用约定">2. 调用约定</h2>
+<pre><code class="lang-text">pi --no-approve --no-extensions --no-mcp --no-skills --no-context-files --no-prompt-templates \
+   --no-session --print --mode json --tools read,grep,find,ls \
+   --provider &lt;provider&gt; --model &lt;model&gt; --thinking &lt;roles.reviewer.effort&gt; -- &lt;提示&gt;</code></pre>
+<ul><li><strong>模型</strong>：<code>roles.reviewer.model</code> 写作 <code>provider/model</code>（例如 <code>openai/gpt-5.4</code>），因为 pi 的同名模型可以来自不同的提供方。</li><li><strong>只读</strong>：只开放内置的 <code>read</code>、<code>grep</code>、<code>find</code>、<code>ls</code>；不加载扩展、MCP、skill、提示模板与项目上下文文件，被评审仓库中的 <code>.pi/</code> 与 <code>AGENTS.md</code> 都不会生效（<code>--no-approve</code>）。</li><li><strong>提示</strong>：只指向评审请求文件，diff 由 tsw 写入 <code>rK-diff.patch</code>（与 CC004、CP004 相同，DN004 §3.1）。</li><li><strong>会话</strong>：<code>--no-session</code>，不留会话记录；不续用，每轮全量并附上一轮的处置与增量 diff（<code>incremental: false</code>）。</li><li><strong>进程</strong>：用 <code>tsw/review/process.py</code> 的进程树启动，超时结束整个进程组；stdout 写入匿名临时文件再解析，不经内存累积，也不进账本。</li></ul>
+<h2 id="3-结果判定">3. 结果判定</h2>
+<p>本轮失败（<code>review_fail</code>）的情形：退出码不为 0；超时；JSONL 无法解析；没有 <code>agent_settled</code>；任何助手消息的 <code>provider/model</code> 与配置不同（不回退）；最后一条助手消息的 <code>stopReason</code> 不是 <code>stop</code> 或没有文字；回复不满足 DN004 §4 的输出契约。</p>
+<h2 id="4-列出可用模型dn004-34">4. 列出可用模型（DN004 §3.4）</h2>
+<p><code>pi --list-models</code>（同样不加载扩展与项目资源）输出表格，取 <code>provider</code> 与 <code>model</code> 两列组成 <code>provider/model</code>。pi 只说明模型是否支持思考，不给出每个模型支持的级别，所以推理强度按 DN003 的取值让用户选，第一轮评审时核实。</p>
+<h2 id="5-能力声明">5. 能力声明</h2>
+<table><thead><tr><th>能力</th><th>值</th></tr></thead><tbody><tr><td><code>execution</code></td><td><code>direct</code></td></tr><tr><td><code>oneshot</code></td><td>是</td></tr><tr><td><code>read_only_enforced</code></td><td>是（只开放只读工具，不加载扩展与 MCP）</td></tr><tr><td><code>incremental</code></td><td>否</td></tr><tr><td>其他</td><td>不承载 worker，用户不能直接对话，无唤醒</td></tr></tbody></table>
+<h2 id="6-验证">6. 验证</h2>
+<ul><li>unit：JSONL 解析（完成、模型不符、缺少 <code>agent_settled</code>、非 <code>stop</code>、无效 JSON）与 <code>--list-models</code> 表格解析。</li><li>surface：替身 <code>pi</code> 命令行的独立进程运行，核对参数、超时与进程组结束。</li><li>live：<code>python tools/live.py reviewer --reviewer pi-cli</code>，真实 pi 在固定样例上两轮全量评审，核对只读与输出契约。</li></ul>
+<footer>本页由同目录的 <a href="PI004-reviewer.md">PI004-reviewer.md</a> 生成，内容与 Markdown 版本一致。</footer>
+</main>
+</div>
+</body>
+</html>

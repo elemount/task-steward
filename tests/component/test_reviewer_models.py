@@ -11,13 +11,13 @@ from __future__ import annotations
 
 import json
 import shutil
-import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from tests.machine_harness import Harness
+from tests.support import stand_in
 from tsw import confedit
 from tsw.config import load_config
 from tsw.errors import TswError
@@ -41,8 +41,7 @@ def logged(log: Path) -> list[dict[str, Any]]:
 
 
 def fake_claude(tmp_path: Path) -> str:
-    wrapper = tmp_path / "claude.cmd"
-    wrapper.write_text(f'@"{sys.executable}" "{FAKE}" %*\r\n', encoding="utf-8")
+    wrapper = stand_in(tmp_path / "claude", FAKE)
     return str(wrapper)
 
 

@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="tsw-source-sha256" content="e48c0b542aa5b60e97b7e82f20af64aa9bbeaf07193e4f4108d2e33580871879">
+<title>PI001 Pi 上的宿主集成：主会话、RPC worker 与护栏</title>
+<style>
+:root{--fg:#1f2430;--muted:#5b6475;--line:#d9dee8;--accent:#3b5bdb;--bg-soft:#f6f8fc;--code:#f3f4f8}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.7 "Segoe UI","Microsoft YaHei",sans-serif;color:var(--fg);background:#fff}
+.layout{display:grid;grid-template-columns:260px minmax(0,1fr);max-width:1400px;margin:0 auto}
+nav.toc{position:sticky;top:0;align-self:start;max-height:100vh;overflow:auto;padding:28px 18px;border-right:1px solid var(--line);font-size:13px}
+nav.toc h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0 0 8px}
+nav.toc a{display:block;color:var(--fg);text-decoration:none;padding:2px 0}
+nav.toc a.l3{padding-left:14px;color:var(--muted)}
+nav.toc a:hover{color:var(--accent)}
+main{padding:32px 48px 64px;min-width:0}
+h1{font-size:28px;margin:0 0 16px;border-bottom:3px solid var(--accent);padding-bottom:10px}
+h2{font-size:21px;margin:36px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+h3{font-size:17px;margin:26px 0 10px}
+h4{font-size:15px;margin:20px 0 8px}
+a{color:var(--accent)}
+code{font-family:Consolas,"Cascadia Mono",monospace;font-size:13px;background:var(--code);padding:1px 5px;border-radius:4px}
+pre{background:#1e2230;color:#e8eaf2;padding:14px 16px;border-radius:8px;overflow:auto;line-height:1.5}
+pre code{background:none;padding:0;color:inherit}
+table{border-collapse:collapse;width:100%;margin:12px 0 18px;font-size:13.5px;display:block;overflow-x:auto}
+th,td{border:1px solid var(--line);padding:6px 9px;text-align:left;vertical-align:top}
+th{background:var(--bg-soft);white-space:nowrap}
+tr:nth-child(even) td{background:#fbfcfe}
+blockquote{margin:12px 0;padding:8px 16px;border-left:4px solid var(--accent);background:var(--bg-soft)}
+figure{margin:18px 0 8px;padding:12px;border:1px solid var(--line);border-radius:10px;background:#fff}
+figure svg{display:block;width:100%;height:auto;max-height:none}
+figcaption{font-size:13px;color:var(--muted);margin-top:6px;display:flex;justify-content:space-between;gap:12px}
+.meta{color:var(--muted);font-size:13px}
+footer{margin-top:48px;color:var(--muted);font-size:12px;border-top:1px solid var(--line);padding-top:10px}
+@media (max-width:900px){.layout{grid-template-columns:1fr}nav.toc{position:static;max-height:none;border-right:0;border-bottom:1px solid var(--line)}main{padding:20px}}
+@media print{nav.toc{display:none}.layout{display:block}main{padding:0}a{color:inherit;text-decoration:none}
+ pre{white-space:pre-wrap;background:#f3f4f8;color:#111}figure,table,pre{break-inside:avoid}h2,h3{break-after:avoid}
+ body{font-size:11pt}@page{margin:16mm 14mm}}
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="toc"><h2>目录</h2><a class="l2" href="#1-范围">1. 范围</a><a class="l2" href="#2-与-claude-code-的差别">2. 与 Claude Code 的差别</a><a class="l2" href="#3-组成">3. 组成</a><a class="l2" href="#4-主会话">4. 主会话</a><a class="l3" href="#41-会话身份">4.1 会话身份</a><a class="l3" href="#42-pi-工具名">4.2 pi 工具名</a><a class="l2" href="#5-worker">5. worker</a><a class="l3" href="#51-创建与投递">5.1 创建与投递</a><a class="l3" href="#52-会话服务">5.2 会话服务</a><a class="l3" href="#53-会话间消息与唤醒主会话">5.3 会话间消息与唤醒主会话</a><a class="l3" href="#54-用户与-worker-直接对话worker-提问">5.4 用户与 worker 直接对话、worker 提问</a><a class="l3" href="#55-能力声明">5.5 能力声明</a><a class="l2" href="#6-护栏">6. 护栏</a><a class="l3" href="#61-事件对应">6.1 事件对应</a><a class="l3" href="#62-用户原话">6.2 用户原话</a><a class="l3" href="#63-不使用权限模式">6.3 不使用权限模式</a><a class="l2" href="#7-不支持的部分第一版">7. 不支持的部分（第一版）</a><a class="l2" href="#8-安装linux--wsl">8. 安装（Linux / WSL）</a><a class="l2" href="#9-用户的决定2026-11-25">9. 用户的决定（2026-11-25）</a><a class="l2" href="#10-验证">10. 验证</a></nav>
+<main>
+<h1>PI001 Pi 上的宿主集成：主会话、RPC worker 与护栏</h1>
+<ul><li>状态：设计草案（用户要求“允许使用 pi 作为主 agent，pi 可以用 pi --rpc”；2026-11-25 用户对 §9 的决定：“claude一样的选择，然后不需要权限模式”）</li><li>日期：2026-11-25</li><li>实现：<a href="../DN001-architecture.html">DN001 总体架构</a> · <a href="../DN006-plugin-layer.html">DN006 插件层</a> · <a href="../DN008-guardrails.html">DN008 校验原则</a> · <a href="../DN009-distribution-and-install.html">DN009 分发与安装</a> · 评审器：<a href="PI004-reviewer.html">PI004</a></li></ul>
+<h2 id="1-范围">1. 范围</h2>
+<p>本文是 DN001 / DN006 / DN008 / DN009 在 <a href="https://pi.dev">Pi</a>（<code>@earendil-works/pi-coding-agent</code> 命令行，下称 pi）上的实现：</p>
+<ul><li><strong>主会话</strong>是用户在数据目录中打开的交互式 pi（TUI），加载 TaskSteward 的 pi 扩展；</li><li><strong>worker</strong> 是 tsw 以 <code>pi --mode rpc</code> 启动的长驻子进程，一个 attempt 一个，由 tsw 的会话服务进程持有；</li><li>宿主集成 <code>pi</code>、会话适配器 <code>pi-tui</code>（主会话）与 <code>pi-rpc</code>（worker）、评审器 <code>pi-cli</code>（PI004）都是新增的插件实现，Claude Code 的实现不变，仍是默认。</li></ul>
+<p>先支持 Linux 与 WSL（Unix 套接字、POSIX 进程组）；Windows 上的 pi 留到之后。</p>
+<h2 id="2-与-claude-code-的差别">2. 与 Claude Code 的差别</h2>
+<table><thead><tr><th>项</th><th>Claude Code（CC001、CC006）</th><th>pi（本文）</th></tr></thead><tbody><tr><td>主会话</td><td>桌面 app 中的会话</td><td>终端中的交互式 <code>pi</code>，目录为数据目录，输入 <code>/skill:orchestrate</code> 开始</td></tr><tr><td>worker 的创建</td><td>主会话调用 app 的 <code>start_session</code>，只能在用户 turn 中（<code>dispatch_window</code>）</td><td>主会话调用扩展的 <code>tsw_start_session</code>，tsw 启动 <code>pi --mode rpc</code>；任何 turn 都可以，不需要预启动</td></tr><tr><td>worker 的界面</td><td>侧栏中的会话，用户可直接对话</td><td>没有自己的界面：用户在终端用 <code>tsw pi chat &lt;任务&gt;</code> 与它直接对话（§5.4）</td></tr><tr><td>tsw 工具</td><td>插件的 MCP server</td><td>扩展用 <code>pi.registerMcpServer</code> 注册同一个 <code>tsw mcp</code>，工具名 <code>mcp__tsw__&lt;工具&gt;</code>（§4）</td></tr><tr><td>会话间消息</td><td><code>send_message</code></td><td>扩展的 <code>tsw_send_message</code>（§5.3）</td></tr><tr><td>护栏</td><td>hooks（<code>PreToolUse</code> 等）</td><td>扩展的 <code>tool_call</code> / <code>input</code> / <code>agent_before_settle</code> 事件转成同样的 <code>tsw guard</code> 调用（§6）</td></tr><tr><td>会话身份</td><td><code>CLAUDE_CODE_HOST_SESSION_ID</code></td><td><code>TSW_SESSION_ID</code>，缺省为 pi 的 <code>PI_SESSION_ID</code> 加前缀 <code>pi:</code>（§4.1）</td></tr><tr><td>宿主自己的保护</td><td>权限模式与 auto 模式分类器</td><td>不使用权限模式（§6.3）</td></tr><tr><td>唤醒</td><td>跨会话消息（push）</td><td>主会话扩展轮询邮箱，有消息时开始一轮（§5.3）</td></tr><tr><td>定时</td><td><code>CronCreate</code></td><td>没有：例行会话不可用；提问超时由主会话扩展的轮询发现（§5.4、§7）</td></tr></tbody></table>
+<h2 id="3-组成">3. 组成</h2>
+<table><thead><tr><th>部分</th><th>位置</th><th>职责</th></tr></thead><tbody><tr><td>pi 包与扩展</td><td>产品检出的 <code>pi/</code>（<code>package.json</code> 的 <code>pi.extensions</code> 指向 <code>pi/extension/index.ts</code>）</td><td>会话开始时问 tsw 本会话的角色；为 TaskSteward 会话注册 <code>tsw</code> MCP server、加上 pi 说明、注册 <code>tsw_start_session</code> 与 <code>tsw_send_message</code>；把工具调用、用户消息与一轮的结束交给 <code>tsw pi guard</code>；主会话中轮询邮箱与到期的提问</td></tr><tr><td>主会话说明</td><td>数据目录的 <code>CLAUDE.md</code>（pi 把它当作上下文文件读取）与 <code>.pi/skills/</code>（<code>tsw host render</code> 从 <code>.claude/skills/</code> 复制）</td><td>与 Claude Code 同一份说明与 skill；扩展再把 <code>tsw/host/pi_notes.md</code>（Claude Code 的写法在 pi 上对应什么）加到 TaskSteward 会话的系统提示</td></tr><tr><td>会话服务 <code>tsw pi serve</code></td><td>tsw 运行时，只用标准库</td><td>每个数据目录一个，按需启动、与主会话进程分离；持有 worker 的 RPC 子进程，读其事件流</td></tr><tr><td><code>tsw pi</code> 命令</td><td><code>tsw/host/pi_cli.py</code></td><td>扩展用：<code>whoami</code>、<code>start</code>、<code>send</code>、<code>stop</code>、<code>list</code>、<code>poll</code>、<code>guard</code>；用户用：<code>chat</code></td></tr></tbody></table>
+<p>扩展是 TypeScript（pi 用 jiti 直接加载，不需要编译），只是薄的转发层：所有规则仍在 tsw 的 Python 运行时中，tsw 运行时仍只依赖标准库。扩展经 <code>TSW_PYTHON</code>（缺省 <code>python3</code>）运行检出中的 <code>plugin/bin/tsw_launch.py</code>；同一进程中只加载一次（已安装的包与 <code>-e</code> 同时指向它时）。</p>
+<h2 id="4-主会话">4. 主会话</h2>
+<ol><li>用户在终端 <code>cd &lt;数据目录&gt; &amp;&amp; pi</code>，信任该目录一次（pi 才读取项目的 <code>.pi/skills/</code>）。扩展在 <code>session_start</code> 运行 <code>tsw pi whoami</code>（带 <code>TSW_SESSION_ID</code> 与当前目录），得到角色、<code>tsw mcp</code> 的启动方式与 pi 说明。</li><li>TaskSteward 会话（主会话、worker、待绑定的会话）注册 <code>tsw</code> MCP server（<code>exposure: direct</code>，环境带 <code>TSW_HOME</code> 与 <code>TSW_SESSION_ID</code>），并运行 <code>tsw pi guard SessionStart</code>：主会话照 DN001 §6.4 自动领取调度租约，结果作为扩展消息显示。</li><li>用户输入 <code>/skill:orchestrate</code> 开始主会话（对应 Claude Code 的 <code>/orchestrate</code>）。</li><li>与 TaskSteward 无关的会话（角色 <code>none</code>）不注册 tsw 工具，扩展只做护栏。</li></ol>
+<h3 id="41-会话身份">4.1 会话身份</h3>
+<p><code>tsw.host.identity</code> 依次取 <code>TSW_SESSION_ID</code>、Claude Code 的 <code>CLAUDE_CODE_HOST_SESSION_ID</code>、pi 给 bash 工具的 <code>PI_SESSION_ID</code>（加前缀 <code>pi:</code>）。扩展调用 tsw 时都设 <code>TSW_SESSION_ID</code>；主会话中模型运行的 <code>tsw</code> 命令经 <code>PI_SESSION_ID</code> 得到同一个 ID；worker 的整个进程带 <code>TSW_SESSION_ID=pi:&lt;会话名&gt;</code>。账本中 pi 会话的 <code>session_ref</code> 因此不会与 Claude Code 的混淆。只增不删，Claude Code 的行为不变。pi 给它启动的每个进程设 <code>PI_CODING_AGENT</code>，tsw 把它与 <code>TSW_SESSION_ID</code>、<code>PI_SESSION_ID</code> 都当作“在会话中”（用户本人的命令在会话中拒绝，DN006 §8.10）。</p>
+<h3 id="42-pi-工具名">4.2 pi 工具名</h3>
+<p>DN008 的 block list 规则按工具名与参数判断。<code>tsw pi guard</code> 把 pi 的工具映射为 guard 已认识的名称，guard 本身不改：</p>
+<table><thead><tr><th>pi 工具</th><th>转为</th><th>判断依据</th></tr></thead><tbody><tr><td><code>write</code></td><td><code>Write</code></td><td><code>path</code> → <code>file_path</code></td></tr><tr><td><code>edit</code></td><td><code>Edit</code></td><td><code>path</code> → <code>file_path</code></td></tr><tr><td><code>bash</code></td><td><code>Bash</code></td><td><code>command</code></td></tr><tr><td>其他（<code>read</code>、<code>grep</code>、<code>find</code>、<code>ls</code>、<code>mcp__tsw__*</code>、其他扩展的工具）</td><td>不检查</td><td>只读，或由 tsw 的状态机守卫，或与 Claude Code 上未匹配的工具相同（block list）</td></tr></tbody></table>
+<h2 id="5-worker">5. worker</h2>
+<h3 id="51-创建与投递">5.1 创建与投递</h3>
+<p>主会话照常调用 <code>attempt_start</code>（DN002 T07），再以它返回的 <code>session_name</code>、会话目录（worktree 或执行目录）与 <code>prompt</code> 调用 <code>tsw_start_session</code>，拿到 <code>session_ref</code> 后 <code>attempt_reconcile</code>。<code>tsw pi start</code>：</p>
+<ul><li>调用者须是主会话；<code>session_name</code> 须属于一个处于 <code>starting</code> 的 attempt（先落账再创建，与 Claude Code 上 <code>start_session</code> 的规则相同）；会话目录须在该 attempt 的执行目录之中；</li><li>请会话服务以 <code>pi --mode rpc --session-dir &lt;数据目录&gt;/cache/pi-sessions/sessions --session-id &lt;会话名&gt; --name &lt;标题&gt; -e &lt;产品检出&gt;/pi [--model &lt;provider/model&gt;] --thinking &lt;roles.worker.effort&gt;</code> 在会话目录启动 worker（<code>roles.worker.model</code> 为 <code>default</code> 时用 pi 自己的默认模型），环境带 <code>TSW_HOME</code>、<code>TSW_SESSION_ID=pi:&lt;会话名&gt;</code>、<code>TSW_PYTHON</code>、<code>TSW_REPO</code>；</li><li>会话状态（目录、请求、是否运行）先写入 <code>cache/pi-sessions/&lt;会话名&gt;.json</code> 再启动进程；进程起来后发送 RPC <code>prompt</code>（<code>attempt_start</code> 返回的 worker 说明加任务书路径）；</li><li>之后的消息经 <code>prompt</code> 投递，worker 正在运行时为 <code>streamingBehavior: &quot;followUp&quot;</code>（<code>tsw pi chat</code> 为 <code>steer</code>）；</li><li>停止的 worker（或上一个会话服务启动的）收到消息时以同一会话 ID 与目录恢复（<code>reuse_session</code>）。</li></ul>
+<h3 id="52-会话服务">5.2 会话服务</h3>
+<p>worker 不作为主会话 pi 进程的子进程：用户退出或重开主会话时，正在工作的 worker 不被结束（用户决定，§9）。<code>tsw pi serve</code>：</p>
+<ul><li>每个数据目录一个（<code>locks/pi-sessions.lock</code>，第二个立即退出）；监听 Unix 套接字，放在只有本用户能进入的目录（<code>$XDG_RUNTIME_DIR</code>，没有时 <code>&lt;临时目录&gt;/tsw-&lt;uid&gt;</code>，套接字路径长度有限）；</li><li>客户端连接不上时以独立进程组启动它（stderr 写入 <code>cache/pi-sessions/serve.log</code>）；没有运行中的 worker 达 <code>TSW_PI_IDLE_SECONDS</code>（缺省 600 秒）后退出；</li><li>每个 worker 一个 <code>pi --mode rpc</code> 子进程，持续读取它的 stdout，只在 LF 处分帧；记录是否在运行一轮（<code>agent_start</code> / <code>agent_settled</code>）与退出码；</li><li>只在内存中保留每个 worker 最近完成的回复（供 <code>tsw pi chat</code> 显示），不把模型输出写到任何地方；reportable 事件都经 tsw 工具落账，与 Claude Code 相同；</li><li>子进程意外退出后，主会话按 DN002 的会话丢失处理，或给它发消息使它恢复。</li></ul>
+<h3 id="53-会话间消息与唤醒主会话">5.3 会话间消息与唤醒主会话</h3>
+<p><code>tsw_send_message</code>（<code>tsw pi send</code>）给服务器持有的 worker 投递；给其他会话（主会话的交互式 pi）写入它的邮箱 <code>cache/pi-sessions/mailbox/</code>。内容都带 <code>&lt;cross-session-message from=&quot;&lt;发送者&gt;&quot;&gt;</code> 包装，guard 与 Claude Code 上一样认作会话间消息，不是用户的话（DN008 §3 误认来源）。</p>
+<p>worker 落账 reportable 事件后照常给持租主会话发消息（DN001 §6.3）。主会话扩展在空闲时每 <code>TSW_PI_POLL_SECONDS</code>（缺省 5 秒）运行一次 <code>tsw pi poll</code>，取走邮箱中的消息，以 <code>pi.sendMessage(..., {triggerTurn: true, deliverAs: &quot;followUp&quot;})</code> 注入并开始一轮。能力声明 <code>wake: poll</code>。</p>
+<h3 id="54-用户与-worker-直接对话worker-提问">5.4 用户与 worker 直接对话、worker 提问</h3>
+<p>与 Claude Code 相同（用户决定，§9）：用户可以直接与 worker 对话，worker 先在自己的会话中问用户，超时无人回答才转交主会话（DN006 §8.1a、§8.3）。</p>
+<ul><li><strong>直接对话</strong>：<code>tsw pi chat &lt;任务 ID 或会话名&gt;</code> 在用户的终端中连接会话服务：先显示 worker 最近的回复，然后逐行读取用户输入、投递，并显示 worker 完成的回复。它是用户本人在终端运行的命令，会话中运行时拒绝。</li><li><strong>用户原话</strong>：经 <code>tsw pi chat</code> 投递的消息不加包装，worker 扩展的 <code>input</code> 事件把它交给 <code>tsw guard UserPromptSubmit</code>，按用户的话记录（G-USER，DN002 §5.1a）；主会话发给 worker 的消息与任务书带包装，不是用户的话。</li><li><strong>提问</strong>：worker 照常 <code>ask_user</code>，在回复中写出问题，并提醒用户用 <code>tsw pi chat</code> 回答（pi 说明）。</li><li><strong>超时转交</strong>：Claude Code 上由例行会话发现超时的问题（DN006 §8.3）。pi 上 <code>tsw pi poll</code> 对持租主会话一并返回到期未答的问题（与例行表同一条规则 <code>handoff_due</code>），扩展开始一轮，请主会话 <code>sync</code> 转交并按 handle-input 处理（每个问题只提醒一次）；主会话不在运行时，问题留在 worker 中，下一次主会话运行时处理。</li></ul>
+<h3 id="55-能力声明">5.5 能力声明</h3>
+<table><thead><tr><th>适配器</th><th><code>execution</code></th><th><code>interactive</code></th><th><code>dispatch_window</code> / <code>prestart</code></th><th><code>wake</code></th><th><code>user_direct_chat</code></th><th><code>timer</code></th><th><code>reuse_session</code></th></tr></thead><tbody><tr><td><code>pi-tui</code>（主会话）</td><td><code>delegated</code></td><td>是</td><td>否 / 否</td><td><code>poll</code></td><td>是</td><td>否</td><td>是</td></tr><tr><td><code>pi-rpc</code>（worker）</td><td><code>delegated</code></td><td>是</td><td>否 / 否</td><td><code>poll</code></td><td>是（<code>tsw pi chat</code>）</td><td>否</td><td>是</td></tr></tbody></table>
+<p>配置校验（DN003 §4）：<code>plugins.host_integration</code> 为 <code>pi</code> 时 <code>roles.orchestrator.session</code> 须为 <code>pi-tui</code>、<code>roles.worker.session</code> 须为 <code>pi-rpc</code>，<code>routine.enabled</code> 须为 false，不能用 <code>teams-chat</code> 渠道（它依赖例行会话）；pi 会话与评审器的模型写作 <code>provider/model</code>，主会话与 worker 也可以写 <code>default</code>（pi 自己的默认模型）。</p>
+<h2 id="6-护栏">6. 护栏</h2>
+<h3 id="61-事件对应">6.1 事件对应</h3>
+<table><thead><tr><th>Claude Code hook</th><th>pi 扩展事件</th><th>做法</th></tr></thead><tbody><tr><td><code>SessionStart</code></td><td><code>session_start</code></td><td><code>tsw pi guard SessionStart</code>，上下文作为扩展消息显示</td></tr><tr><td><code>PreToolUse</code></td><td><code>tool_call</code>（<code>write</code>、<code>edit</code>、<code>bash</code>）</td><td>按 §4.2 转换后经 guard；拒绝时返回 <code>{block: true, reason}</code>，reason 是 guard 的说明（含规则编号与正确做法）</td></tr><tr><td><code>UserPromptSubmit</code></td><td><code>input</code>（交互输入与 RPC 输入；扩展注入的不算）</td><td>经 guard，记录用户原话供 G-USER 引用（DN002 §5.1a）；上下文以 steer 加入这一轮</td></tr><tr><td><code>Stop</code></td><td><code>agent_before_settle</code></td><td>经 guard；需要提醒时加一条扩展消息并继续一轮（每轮最多一次）</td></tr></tbody></table>
+<p><code>tsw pi guard</code> 按 Claude Code hooks 的字段组装 payload（<code>session_id</code>、<code>cwd</code>、<code>tool_name</code>、<code>tool_input</code>、<code>prompt</code>），guard 读取时本来就忽略未知字段（compatibility.md）；pi 没有会话记录的 <code>transcript_path</code>，guard 读不到来源时照旧按它看到的消息判断。guard 内部失败时放行并在 stderr 报告，与 hooks 相同。</p>
+<h3 id="62-用户原话">6.2 用户原话</h3>
+<p>G-USER 依赖“这一轮来自用户本人”。pi 中，主会话的交互输入、<code>tsw pi chat</code> 投递给 worker 的输入是用户的话；扩展注入的消息（唤醒、提醒）与带 <code>&lt;cross-session-message&gt;</code> 包装的会话间消息不是。</p>
+<h3 id="63-不使用权限模式">6.3 不使用权限模式</h3>
+<p>用户决定 pi 上不需要权限模式：pi 没有权限模式，也没有 auto 模式分类器，tsw 不为它另造一层。<code>roles.*.permission_mode</code> 在 pi 上不生效（配置校验给出警告，不报错），主会话与 worker 的 bash 与文件写入只受 §6.1 的 block list 约束。DN008 §5.3 交给宿主的一般风险（删除文件、危险命令）在 pi 上由用户自己承担，这是用户接受的取舍。</p>
+<h2 id="7-不支持的部分第一版">7. 不支持的部分（第一版）</h2>
+<ul><li>例行会话（DN006 §8.9）：pi 没有会话内定时任务。超时转交由主会话扩展的轮询代替（§5.4）；<code>teams-chat</code> 渠道依赖例行会话，不可用。</li><li>workdeck 门户：它投递到 Claude 会话收件箱，不认识 pi 会话；安装时这一步跳过。</li><li>会话标题与归档（DN002 §5.8）：没有侧栏，只记账。</li><li>Dashboard 常驻服务：Linux 上没有计划任务，第一版只支持在终端运行 <code>tsw dashboard</code>。</li><li>Windows 上的 pi。</li></ul>
+<h2 id="8-安装linux--wsl">8. 安装（Linux / WSL）</h2>
+<p>终端入口 <code>setup.sh</code>（DN009 §12）探测 Python 3.10+ 与 git，运行 <code>tsw setup install --interactive</code>。本机有 pi 时才提供宿主问题的 <code>pi</code> 选项（只有一个可选时不问）；找不到 <code>claude</code> 而找到 pi 时默认 pi。</p>
+<table><thead><tr><th>步骤</th><th>Claude Code（Linux）</th><th>pi</th></tr></thead><tbody><tr><td>垫片与 PATH</td><td>启动脚本在状态目录 <code>bin/tsw</code>，<code>~/.local/bin/tsw</code> 是指向它的符号链接（已有别的 <code>tsw</code> 时拒绝，不替换）；<code>~/.local/bin</code> 不在 PATH 时 <code>path</code> 为手工步骤，给出 <code>export</code> 行，不自动改</td><td>同左</td></tr><tr><td>插件</td><td><code>claude plugin marketplace add</code></td><td><code>pi install &lt;产品检出&gt;/pi</code>（本地路径的 pi 包，原地加载，没有副本）；已声明时跳过；卸载时 <code>pi remove</code> 移除安装加入的</td></tr><tr><td>用户设置</td><td><code>~/.claude/settings.json</code> 的 <code>env</code> 与 auto 模式规则</td><td>跳过：扩展从检出运行 tsw，数据目录由 <code>.local/tsw-home</code> 定位</td></tr><tr><td>配置</td><td>不变</td><td>主会话 <code>pi-tui</code>、worker <code>pi-rpc</code>（模型 <code>default</code>）、例行会话关闭</td></tr><tr><td>render</td><td><code>CLAUDE.md</code>、<code>.claude/skills/</code></td><td>另把 skill 复制到 <code>.pi/skills/</code>；没有插件副本要更新</td></tr><tr><td>workdeck</td><td>有 <code>workdeck</code> 时可选</td><td>跳过</td></tr><tr><td>verify</td><td>插件来源与副本</td><td><code>pi_package</code>：pi 的用户设置声明了检出中的 pi 包</td></tr><tr><td>安装记录</td><td><code>$XDG_STATE_HOME/task-steward/</code>（缺省 <code>~/.local/state/task-steward/</code>）</td><td>同左</td></tr></tbody></table>
+<p>安装后的下一步：打开新终端，<code>cd &lt;数据目录&gt; &amp;&amp; pi</code>，信任目录，输入 <code>/skill:orchestrate</code>；与 worker 对话用另一个终端中的 <code>tsw pi chat &lt;任务 ID&gt;</code>。</p>
+<h2 id="9-用户的决定2026-11-25">9. 用户的决定（2026-11-25）</h2>
+<p>用户原话：“claude一样的选择，然后不需要权限模式”。</p>
+<ol><li>worker 的进程归属：与 Claude Code 一样，worker 不随主会话结束，由独立的会话服务持有（§5.2）。</li><li>worker 提问：与 Claude Code 一样，用户可直接与 worker 对话，worker 先在自己的会话中问，超时才转交主会话（§5.4）。</li><li>权限：不使用权限模式（§6.3）。</li><li>范围：第一版 Linux / WSL，不做例行会话、workdeck 与 Dashboard 常驻服务（§7）；超时转交由主会话扩展的轮询代替例行会话（§5.4）。</li></ol>
+<h2 id="10-验证">10. 验证</h2>
+<ul><li>unit：会话身份的顺序；pi 工具到 guard payload 的转换与 guard 答复的转换；会话间消息的包装；宿主 pi 的配置与校验规则；<code>provider/model</code>；宿主的默认与可选项。</li><li>component：会话服务以 pi 的替身（<code>tests/fixtures/fake_pi.py</code>，本仓库之外的平台，模拟证据）创建、投递、恢复、停止；邮箱；<code>tsw pi start</code> 只为已落账的 attempt 在其执行目录中创建；轮询；pi 包的安装与移除；以 pi 为宿主的完整 <code>tsw setup install</code> / <code>uninstall</code>。</li><li>surface：<code>tsw pi send</code> 到 <code>poll</code>、<code>whoami</code>、<code>guard</code> 拒绝写入账本、<code>chat</code> 在会话中拒绝、<code>start</code> 经独立的 <code>tsw pi serve</code> 启动替身 worker 并在停止后退出。</li><li>本机：扩展在真实 pi 的 RPC 模式中加载，<code>session_start</code> 把数据目录中的会话认作主会话、领取租约并显示上下文（不调用模型）。</li><li>live（<code>pi-e2e</code>，尚未实现）：真实 pi 主会话派发一个 RPC worker，worker 自评审、提问、<code>tsw pi chat</code> 回答、提交，主会话验收与取消。在此之前，真实 pi 上的完整流程为未验证。</li></ul>
+<footer>本页由同目录的 <a href="PI001-host-and-sessions.md">PI001-host-and-sessions.md</a> 生成，内容与 Markdown 版本一致。</footer>
+</main>
+</div>
+</body>
+</html>

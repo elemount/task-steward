@@ -100,6 +100,51 @@ SESSIONS: dict[str, SessionCaps] = {
         reuse_session=False,
         open_existing_dir=True,
     ),
+    "pi-cli": SessionCaps(
+        host="pi",
+        execution="direct",
+        interactive=False,
+        oneshot=True,
+        read_only_enforced=True,  # Built-in read/grep/find/ls only; no extensions or MCP.
+        incremental=False,
+        user_direct_chat=False,
+        wake="none",
+        dispatch_window=False,
+        prestart=False,
+        reuse_session=False,
+        open_existing_dir=True,
+    ),
+    # The main session: the user's interactive ``pi`` in the data directory (PI001 §4).
+    "pi-tui": SessionCaps(
+        host="pi",
+        execution="delegated",
+        interactive=True,
+        oneshot=False,
+        read_only_enforced=False,
+        incremental=False,
+        user_direct_chat=True,
+        wake="poll",  # the extension polls its mailbox and the due handoffs (PI001 §5.3)
+        dispatch_window=False,
+        prestart=False,
+        reuse_session=True,
+        open_existing_dir=True,
+    ),
+    # A worker: ``pi --mode rpc`` held by ``tsw pi serve``; the user talks to it with
+    # ``tsw pi chat`` (PI001 §5).
+    "pi-rpc": SessionCaps(
+        host="pi",
+        execution="delegated",
+        interactive=True,
+        oneshot=False,
+        read_only_enforced=False,
+        incremental=False,
+        user_direct_chat=True,
+        wake="poll",
+        dispatch_window=False,
+        prestart=False,
+        reuse_session=True,
+        open_existing_dir=True,
+    ),
     # ``copilot -p`` with only read-only tools available (CP004).
     "copilot-cli": SessionCaps(
         host="copilot",
@@ -128,7 +173,7 @@ CHANNELS: dict[str, ChannelCaps] = {
     ),
 }
 
-HOST_INTEGRATIONS = ("claude-code",)
+HOST_INTEGRATIONS = ("claude-code", "pi")
 # Neutral permission modes (DN003 §3.1) as each host names them (CC006 §3).
 PERMISSION_NAMES: dict[str, dict[str, str]] = {
     "claude-code": {

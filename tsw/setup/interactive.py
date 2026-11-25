@@ -127,6 +127,8 @@ def run_lines(args: argparse.Namespace, style: Style) -> dict[str, Any]:
     print(f"产品检出：{checked['checkout']['path']}（{checked['checkout']['head']}）")
     print(f"Python：{checked['python']['path']}（{checked['python']['version']}）")
     print(f"Claude Code 命令行：{checked['claude']}")
+    if checked.get("pi"):
+        print(f"pi 命令行：{checked['pi']}")
     if blocking:
         raise _preconditions(blocking)
     print(style.bold("\n请回答下面的问题（直接回车采用默认值）："))
@@ -264,8 +266,11 @@ def _run_keys(args: argparse.Namespace, screen: _Screen) -> dict[str, Any]:
     screen.say(f" {style.mark('ok')} 产品检出  {checkout['path']}  {style.dim(head)}")
     python = checked["python"]
     screen.say(f" {style.mark('ok')} Python    {python['path']}  {style.dim(python['version'])}")
-    claude = checked["claude"]
-    screen.say(f" {style.mark('ok' if claude else 'bad')} Claude Code 命令行  {claude}")
+    claude, pi = checked["claude"], checked.get("pi")
+    missing = "warn" if pi else "bad"  # with pi, Claude Code is one of two hosts (PI001 §8)
+    screen.say(f" {style.mark('ok' if claude else missing)} Claude Code 命令行  {claude}")
+    if pi:
+        screen.say(f" {style.mark('ok')} pi 命令行  {pi}")
     if blocking:
         for problem in blocking:
             screen.say(f" {style.mark('bad')} {style.bad(problem)}")

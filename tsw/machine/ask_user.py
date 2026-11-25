@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from collections.abc import Mapping
 from datetime import timedelta
@@ -89,6 +90,26 @@ def _cmd(env: ToolEnv, op: str, inp: Mapping[str, Any], build: Any) -> Command:
     )
 
 
+# The options a question may offer (DN006 §8.10 item 8): the same as the buttons of the app's
+# question box, shown as buttons on the Dashboard.
+MAX_OPTIONS = 6
+MAX_OPTION_CHARS = 80
+
+
+def options(inp: Mapping[str, Any]) -> list[str]:
+    """The question's options, checked: at most six distinct texts of 1 to 80 characters."""
+    found = strings(items(inp, "options", required=False), "options")
+    if len(found) > MAX_OPTIONS:
+        raise rejected(f"选项至多 {MAX_OPTIONS} 项", reason="invalid_input", field="options")
+    if any(len(o) > MAX_OPTION_CHARS for o in found):
+        raise rejected(
+            f"每个选项至多 {MAX_OPTION_CHARS} 个字符", reason="invalid_input", field="options"
+        )
+    if len(set(found)) != len(found):
+        raise rejected("选项不能重复", reason="invalid_input", field="options")
+    return found
+
+
 def timeout_minutes(config: EffectiveConfig) -> int:
     return int(config.get("input.in_session_timeout_minutes"))
 
@@ -153,6 +174,63 @@ def is_automated(prompt: str) -> bool:
 CLOSED = ("accepted", "cancelled", "archived")
 
 
+# The tag the Dashboard puts before the words it delivers to a worker's session (DN006 §8.10,
+# T357): the question they answer. The hook records the words after it; the tag only narrows
+# which question they may answer, so a user typing it gains nothing over typing the words.
+DASHBOARD_TAG = "[TaskSteward Dashboard 答复 {request_id}]\n"
+_DASHBOARD_TAG = re.compile(r"\A\[TaskSteward Dashboard 答复 (Q-[A-Za-z0-9_-]+)\]\n")
+
+
+def dashboard_tagged(request_id: str, words: str) -> str:
+    """What the Dashboard writes into the session: the tag, then the user's words."""
+    return DASHBOARD_TAG.format(request_id=request_id) + words
+
+
+def dashboard_answer(text: str) -> tuple[str | None, str]:
+    """The question a delivered answer names and the user's words; (None, text) untagged."""
+    found = _DASHBOARD_TAG.match(text)
+    return (found.group(1), text[found.end() :]) if found else (None, text)
+
+
+def collecting(
+    conn: sqlite3.Connection, task_id: str, session_ref: str, revision: int
+) -> str | None:
+    """The question a message the user writes in this worker session now answers, or None.
+
+    Only the session's latest question counts: once it is answered here, or a newer question
+    replaced it, older questions never collect messages again. A pending question is still asked
+    after a requirement change (DN002 §5.1, T292); one already answered elsewhere collects late
+    replies until the next change after its answer (answers recorded before T292 do not say their
+    revision: the question's own is used). The Dashboard asks the same before it delivers an
+    answer to the session (DN006 §8.10, T357), so its words land on the question they answer.
+    """
+    request = row_dict(
+        conn.execute(
+            "SELECT s.request_id, s.answered_in_session, r.status, r.binding, r.resolution "
+            "FROM in_session_requests s JOIN input_requests r ON r.request_id = s.request_id "
+            "WHERE s.task_id = ? AND s.session_ref = ? "
+            "ORDER BY r.rowid DESC LIMIT 1",
+            (task_id, session_ref),
+        ).fetchone()
+    )
+    answers = (
+        request is not None
+        and not request["answered_in_session"]
+        and (
+            request["status"] == "pending"
+            or (
+                request["status"] == "resolved"
+                and (
+                    loads(request["resolution"], {}).get("revision")
+                    or loads(request["binding"], {}).get("revision")
+                )
+                == revision
+            )
+        )
+    )
+    return str(request["request_id"]) if answers and request else None
+
+
 def session_message(
     conn: sqlite3.Connection,
     task_id: str,
@@ -171,6 +249,10 @@ def session_message(
     Any other message is recorded without a question: the worker may cite it as the source of a
     requirement change (``requirement_change``, DN002 §5.1a).
 
+    A message the Dashboard delivered starts with its tag (:func:`dashboard_answer`): the
+    words after it are recorded, and they answer the question the tag names only while that
+    question still takes answers here, never another one (DN006 §8.10, T357).
+
     ``prompt_id`` is the host's id of the turn the message started (Claude Code's hook payload):
     with it the end of the turn finds the message's source (``session_message_via``, T338).
     """
@@ -178,49 +260,28 @@ def session_message(
     if row["status"] in CLOSED or is_automated(prompt):
         return None
     revision = int(row["revision"])
-    # Only the session's latest question counts: once it is answered here, or a newer question
-    # replaced it, older questions never collect messages again.
-    request = row_dict(
-        conn.execute(
-            "SELECT s.request_id, s.answered_in_session, r.status, r.binding, r.resolution "
-            "FROM in_session_requests s JOIN input_requests r ON r.request_id = s.request_id "
-            "WHERE s.task_id = ? AND s.session_ref = ? "
-            "ORDER BY r.rowid DESC LIMIT 1",
-            (task_id, session_ref),
-        ).fetchone()
-    )
-    # A pending question is still asked after a requirement change (DN002 §5.1, T292); one
-    # already answered elsewhere collects late replies until the next change after its answer
-    # (answers recorded before T292 do not say their revision: the question's own is used).
-    answers = (
-        request is not None
-        and not request["answered_in_session"]
-        and (
-            request["status"] == "pending"
-            or (
-                request["status"] == "resolved"
-                and (
-                    loads(request["resolution"], {}).get("revision")
-                    or loads(request["binding"], {}).get("revision")
-                )
-                == revision
-            )
-        )
-    )
     message_id = next_item_id(conn, "session_messages", "message_id", "M", task_id)
+    request_id = collecting(conn, task_id, session_ref, revision)
+    intended, words = dashboard_answer(user_words(prompt))
+    if intended is not None and request_id != intended:
+        # Delivered for a question that no longer takes answers here (answered elsewhere, a new
+        # one asked since): the words answer no question rather than the newer one.
+        request_id = None
     data: dict[str, Any] = {
         "message_id": message_id,
-        "request_id": request["request_id"] if answers and request else None,
+        "request_id": request_id,
         "session_ref": session_ref,
-        "text": user_words(prompt),
+        "text": words,
     }
+    if intended is not None:
+        data["dashboard_request"] = intended  # optional (T357): the question it was sent for
     if prompt_id:
         data["prompt_id"] = prompt_id
     return EventDraft(type="input.session_message", task_id=task_id, revision=revision, data=data)
 
 
 # The entries the host can name for a message's way into the session (DN006 §8.11).
-MESSAGE_VIA = ("workdeck",)
+MESSAGE_VIA = ("workdeck", "dashboard")
 
 
 def session_message_via(
@@ -406,6 +467,7 @@ def ask_user(inp: Mapping[str, Any], env: ToolEnv) -> Command:
     question = text(inp, "question")
     item_ids = strings(items(inp, "items", required=False) or [], "items")
     reserved = flag(inp, "reserved")
+    choices = options(inp)
 
     def build(ctx: CommitContext) -> list[EventDraft]:
         row, current = task_and_attempt(ctx.conn, env, task_id)
@@ -451,6 +513,8 @@ def ask_user(inp: Mapping[str, Any], env: ToolEnv) -> Command:
                         "judgments": item_ids,
                     },
                     "resolves": item_ids,
+                    # Optional (T357): absent when the question offers none, as before.
+                    **({"options": choices} if choices else {}),
                 },
             )
         ]

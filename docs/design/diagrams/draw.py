@@ -536,7 +536,7 @@ def input_routing():
     d.card('ASK',820,415,320,105,'orange')
     d.card('U',820,575,320,60,'teal')
     d.card('HO',820,705,320,95,'orange')
-    d.card('UA',820,860,320,100,'green')
+    d.card('UA',820,860,320,108,'green')
     d.panel(50,435,650,545,'01  主会话判断','yellow')
     d.card('J',70,495,610,70,'yellow')
     d.card('A',70,655,610,140,'yellow')

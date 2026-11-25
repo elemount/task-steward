@@ -212,8 +212,10 @@ def ended(pid: int, wait: float = 10.0) -> bool:
             os.kill(pid, 0)
         except ProcessLookupError:
             return True
-        stat = Path(f"/proc/{pid}/stat")
-        if stat.is_file() and stat.read_text().split(")")[-1].split()[0] == "Z":
+        try:  # a zombie has ended too; the entry may go while it is read (review G3)
+            if Path(f"/proc/{pid}/stat").read_text().split(")")[-1].split()[0] == "Z":
+                return True
+        except (OSError, IndexError):
             return True
         time.sleep(0.1)
     return False

@@ -258,6 +258,9 @@ class Worker:
     def _wait(self) -> None:
         self.exit = self.tree.proc.wait()
         self.tree.end()  # the rest of the process group; its end closes the pipes
+        # What pi wrote before it exited is read first: an answered command stays answered
+        # (review G2). The group is gone, so the pipe ends soon.
+        self._reader.join(timeout=STOP_TIMEOUT)
         with self._lock:
             self.busy = False
             for event, box in self._waiting.values():

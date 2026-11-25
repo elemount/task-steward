@@ -108,3 +108,24 @@ def test_a_pi_package_the_user_had_is_kept_on_uninstall(tmp_path: Path) -> None:
     assert json.loads((agent / "settings.json").read_text(encoding="utf-8"))["packages"] == [
         package
     ]
+
+
+@pytest.mark.use_case("UC-PI-003")
+def test_an_uninstall_that_cannot_remove_the_pi_package_stops_before_the_shim(
+    tmp_path: Path,
+) -> None:
+    product = make_product(tmp_path)
+    (tmp_path / "pi-bin").mkdir()
+    env = setup_env(
+        tmp_path,
+        TSW_PI=str(stand_in(tmp_path / "pi-bin" / "pi", FAKE_PI)),
+        PI_CODING_AGENT_DIR=str(tmp_path / "agent"),
+    )
+    answers = write_answers(tmp_path, tmp_path / "data", host="pi", reviewer="none")
+    code, _out, text = run_setup(product, "install", "--answers", str(answers), env=env)
+    assert code == 0, text
+    env["TSW_PI"] = str(tmp_path / "no-pi")  # pi is gone
+    code, out, _text = run_setup(product, "uninstall", "--yes", env=env)
+    assert code != 0 and out["details"]["step"] == "pi_package"
+    assert (Path(env["HOME"]) / ".local" / "bin" / "tsw").is_symlink()
+    assert record(env)["status"] == "uninstalling"

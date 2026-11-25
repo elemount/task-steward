@@ -1183,6 +1183,15 @@ def uninstall(ctx: Context) -> dict[str, Any]:
         done["pi_package"] = pi_install.remove(ctx.env, pi, ctx.checkout)
     elif package:
         done["pi_package"] = {"ok": False, "note": "找不到 pi 命令行，pi 包没有移除"}
+    if not done.get("pi_package", {"ok": True}).get("ok"):
+        # As for the Claude Code plugin below: stop before the shims (review G1).
+        ctx.record.set(status="uninstalling")
+        raise rejected(
+            "pi 包没有移除，卸载停在这一步（垫片未动）；修正原因后重新运行 tsw setup uninstall",
+            reason="uninstall_incomplete",
+            step="pi_package",
+            removed=done,
+        )
     plugin = ctx.record.step("plugin")
     if not plugin:
         done["plugin"] = {"ok": True, "note": "安装没有动过插件，保留"}

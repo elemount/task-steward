@@ -1697,7 +1697,7 @@
       "id": "UC-PI-003",
       "title": "以 pi 为宿主安装与 render（PI001 §8）",
       "actor": "用户 / tsw setup",
-      "acceptance": "本机有 pi 时安装才提供宿主 pi，找不到 claude 而有 pi 时默认 pi；宿主 pi 的新数据目录配置为 plugins.host_integration pi、主会话 pi-tui、worker pi-rpc（模型 default，即 pi 自己的）、例行会话关闭，且通过校验（宿主 pi 时其他会话适配器、开启例行会话或 teams-chat 报错，权限模式只警告）；pi 的模型写作 provider/model；install 用 pi install <检出>/pi 安装 pi 包（已声明时跳过），不写 Claude Code 用户设置、不接入 workdeck，render 另把 skill 复制到 .pi/skills，verify 核对 pi_package；uninstall 用 pi remove 移除安装加入的 pi 包；next 说明在数据目录运行 pi 并输入 /skill:orchestrate；pi 包的归属记在安装记录自己的 pi_package 步骤，安装前就已声明的 pi 包卸载时保留",
+      "acceptance": "本机有 pi 时安装才提供宿主 pi，找不到 claude 而有 pi 时默认 pi；宿主 pi 的新数据目录配置为 plugins.host_integration pi、主会话 pi-tui、worker pi-rpc（模型 default，即 pi 自己的）、例行会话关闭，且通过校验（宿主 pi 时其他会话适配器、开启例行会话或 teams-chat 报错，权限模式只警告）；pi 的模型写作 provider/model；install 用 pi install <检出>/pi 安装 pi 包（已声明时跳过），不写 Claude Code 用户设置、不接入 workdeck，render 另把 skill 复制到 .pi/skills，verify 核对 pi_package；uninstall 用 pi remove 移除安装加入的 pi 包；next 说明在数据目录运行 pi 并输入 /skill:orchestrate；pi 包的归属记在安装记录自己的 pi_package 步骤，安装前就已声明的 pi 包卸载时保留；移除 pi 包失败（包括找不到 pi）时卸载停在这一步、保留垫片与安装记录（uninstalling），修正后可再运行",
       "surfaces": [
         "cli"
       ],

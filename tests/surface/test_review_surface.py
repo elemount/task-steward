@@ -106,9 +106,12 @@ def alive(pid: int) -> bool:
             os.kill(pid, 0)
         except ProcessLookupError:
             return False
-        # A zombie (ended, not yet reaped by its parent) has ended too.
-        stat = Path(f"/proc/{pid}/stat")
-        return not (stat.is_file() and stat.read_text().split(")")[-1].split()[0] == "Z")
+        # A zombie (ended, not yet reaped by its parent) has ended too; the entry may go while
+        # it is read.
+        try:
+            return Path(f"/proc/{pid}/stat").read_text().split(")")[-1].split()[0] != "Z"
+        except (OSError, IndexError):
+            return False
     listing = subprocess.run(
         ["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True, check=False
     )

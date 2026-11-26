@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -114,6 +115,8 @@ def look(
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-extensions",
+            # Linux CI runners do not allow Chrome's setuid sandbox; the page is tsw's own.
+            *(["--no-sandbox"] if sys.platform != "win32" else []),
             f"--user-data-dir={profile}",
             f"--window-size={size[0]},{size[1]}",
             f"--virtual-time-budget={budget}",

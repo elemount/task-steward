@@ -78,6 +78,7 @@ def test_write_targets_are_resolved_against_the_tracked_directory(
     assert facts.writes == [Path(str(tmp_path / w).rstrip("/\\")).resolve() for w in written]
 
 
+@pytest.mark.windows
 def test_git_bash_drive_paths_and_variables(tmp_path: Path) -> None:
     assert shell.resolve("/c/Work/x", tmp_path) == Path("C:/Work/x")
     assert shell.resolve("$HOME/x", tmp_path) is None

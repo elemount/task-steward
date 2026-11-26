@@ -135,7 +135,11 @@ def test_worker_writes_are_confined_to_its_roots(h: Harness, tmp_path: Path) -> 
         ("cd .. && touch escape.md", False),
         ("cp a.py ../../b.py", False),
         ("tee -a {outside}/log.txt", False),
-        (r'powershell -Command "Set-Content -Path ..\x.txt -Value 1"', False),
+        pytest.param(
+            r'powershell -Command "Set-Content -Path ..\x.txt -Value 1"',
+            False,
+            marks=pytest.mark.windows,  # a backslash separates paths only on Windows
+        ),
         ("bash -c 'rm -rf ../other'", False),
         ("echo x > {draft}", True),
         ("python -m tsw tool run task_dispatch --role orchestrator --input {{}}", False),

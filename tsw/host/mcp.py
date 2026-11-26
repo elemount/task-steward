@@ -120,7 +120,7 @@ HOST_TOOLS: dict[str, tuple[tuple[str, ...], str, dict[str, Any]]] = {
             "properties": {
                 "reviewer": {
                     "type": "string",
-                    "enum": ["codex-app-server", "claude-headless", "copilot-cli"],
+                    "enum": list(reviewer_models.LISTERS),
                     "description": "评审器；缺省为当前配置的",
                 }
             },

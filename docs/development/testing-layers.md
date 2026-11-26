@@ -19,6 +19,12 @@
   平台：Claude app 的会话工具、`claude`、`codex` 与 `copilot` 命令行、模型调用。
 - surface 测试必须经过独立进程和真实序列化；在进程内直接调用命令处理函数属于 unit 测试。
 - 每个 use case 需要哪些层级由 [use-cases.md](use-cases.md) 规定。
+- 只在一个平台上存在的行为用标记区分：`@pytest.mark.windows`（注册表中的用户级 Path、`.cmd` 垫片、
+  PowerShell 与 Git Bash 的路径写法等）在其他平台上不收集，`@pytest.mark.posix`（pi 宿主）在 Windows 上不
+  收集；不收集的测试既不运行也不算跳过。只在一个平台上测试的 use case 在目录中写 `platforms`
+  （[use-cases.md](use-cases.md)），另一个平台上它的层级报告为未验证。不要用 `skipif` 跳过必需的测试。
+- pi 是本仓库之外的平台：测试用替身 `tests/fixtures/fake_pi.py`（`TSW_PI` 指向它），经它得到的证据是模拟
+  证据。真实 pi 只在 live 层级调用（pi 的 live 场景尚未实现，PI001 §10）。
 
 ## live 场景
 

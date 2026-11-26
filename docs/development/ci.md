@@ -5,7 +5,9 @@
 
 ## 形态
 
-- 平台：GitHub Actions，只在 Windows runner（`windows-latest`）上运行；Python 3.10 与 3.13 两个版本。
+- 平台：GitHub Actions。各阶段在 Windows runner（`windows-latest`）上运行；`test` 在 Windows 上跑 Python 3.10
+  与 3.13，另在 Linux runner（`ubuntu-latest`）上跑 Python 3.13（产物 `test-linux-3.13`，pi 宿主只在 Linux / WSL
+  上测试，PI001）。`Gate` 要求这三份测试证据。
 - 触发：每个 PR，以及推送到 `main`。不用 workflow 级的路径过滤，它会让必需检查一直挂起，或让被跳过的
   检查看起来是绿的。
 - 按改动范围选择阶段（scope，见下一节）：`lint` 与 `docs` 每次都运行，`test` 只在改动需要时运行；

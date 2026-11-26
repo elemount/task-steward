@@ -232,6 +232,7 @@ def bare_path() -> str:
 
 
 @pytest.mark.use_case(UC)
+@pytest.mark.windows
 def test_the_probe_finds_python_git_and_claude(tmp_path: Path) -> None:
     claude = fake_claude(tmp_path)
     env = setup_env(tmp_path)
@@ -246,6 +247,7 @@ def test_the_probe_finds_python_git_and_claude(tmp_path: Path) -> None:
 
 
 @pytest.mark.use_case(UC)
+@pytest.mark.windows
 def test_the_probe_reports_missing_items_and_installs_with_winget(tmp_path: Path) -> None:
     env = setup_env(tmp_path)
     env["PATH"] = bare_path()
@@ -275,6 +277,7 @@ def test_the_probe_reports_missing_items_and_installs_with_winget(tmp_path: Path
 
 @pytest.mark.use_case(UC)
 @pytest.mark.use_case("UC-SETUP-005")
+@pytest.mark.windows
 def test_setup_ps1_runs_the_interactive_install(tmp_path: Path) -> None:
     product, claude = make_product(tmp_path), fake_claude(tmp_path)
     env = setup_env(tmp_path)

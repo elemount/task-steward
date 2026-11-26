@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +21,10 @@ from tsw.setup.record import InstallRecord
 
 UC = "UC-SETUP-001"
 GATE = "UC-SETUP-002"
-CHECKOUT = Path("C:/product")
+# An absolute path on this platform: answers must be absolute.
+ROOT = Path("C:/") if sys.platform == "win32" else Path("/")
+CHECKOUT = ROOT / "product"
+DATA = str(ROOT / "data")
 
 
 def qs() -> list[q.Question]:
@@ -83,7 +87,7 @@ def test_the_initial_configuration_follows_the_answers(home: Home) -> None:
     from tsw.config import load_config  # noqa: PLC0415
 
     base: dict[str, Any] = {
-        "home": "C:/data",
+        "home": DATA,
         "language": "en-US",
         "reviewer": "claude-headless",
         "human_channels": "teams-chat",
@@ -154,11 +158,12 @@ def test_the_terminal_asks_again_until_the_data_directory_is_given() -> None:
     answers = q.ask(qs(), {}, lambda _prompt: next(replies), said.append)
     assert answers["home"] == str(Path.cwd() / "data")
     assert "  这一项必须由你给出。" in said
-    assert answers["host"] == "claude-code"  # only one host: chosen without asking
+    assert answers["host"] == "claude-code"  # only one host here: chosen without asking
     assert "checkout" not in answers  # the entry decided it
 
 
 @pytest.mark.use_case(UC)
+@pytest.mark.windows
 def test_path_entries_are_appended_and_removed_without_touching_the_rest() -> None:
     shims = Path("D:/profile/AppData/Local/TaskSteward/bin")
     value = r"C:\Windows;%USERPROFILE%\bin;"
@@ -172,6 +177,7 @@ def test_path_entries_are_appended_and_removed_without_touching_the_rest() -> No
 
 
 @pytest.mark.use_case(UC)
+@pytest.mark.windows
 def test_the_shims_run_the_checkout_launcher_with_the_interpreter() -> None:
     texts = winenv.shim_texts(r"C:\Py\python.exe", Path(r"C:\TSW\task-steward"))
     assert texts["tsw.cmd"] == (
@@ -342,14 +348,20 @@ def test_the_workdeck_question_is_asked_only_where_workdeck_is_found(tmp_path: P
     answers = q.ask(here, {}, read, lambda _text: None)
     assert answers["workdeck"] is False
     assert any("workdeck 门户" in p and "（默认 是）" in p for p in prompts)
-    normalized, problems = q.normalize({"home": "C:/data"}, here)
+    normalized, problems = q.normalize({"home": DATA}, here)
     assert normalized["workdeck"] is True and not problems
 
 
 @pytest.mark.use_case(UC)
 def test_only_implemented_reviewers_are_offered_and_a_missing_codex_is_a_warning() -> None:
     reviewer = next(x for x in qs() if x.id == "reviewer")
-    assert reviewer.choices == ("codex-app-server", "claude-headless", "copilot-cli", "none")
+    assert reviewer.choices == (
+        "codex-app-server",
+        "claude-headless",
+        "copilot-cli",
+        "pi-cli",
+        "none",
+    )
     assert reviewer.default == "codex-app-server"
     _, problems = q.normalize({"home": str(Path.cwd() / "d"), "reviewer": "claude-subagent"}, qs())
     assert any(p.startswith("reviewer：") for p in problems)

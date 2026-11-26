@@ -409,9 +409,9 @@
     },
     {
       "id": "UC-REVIEW-002",
-      "title": "运行配置的评审器（review_run / tsw review run）：Codex、Copilot CLI、Claude（claude -p）",
+      "title": "运行配置的评审器（review_run / tsw review run）：Codex、Copilot CLI、Claude（claude -p）、pi（pi --print）",
       "actor": "worker",
-      "acceptance": "只有绑定任务、处于运行状态且在执行目录中的 worker 能运行，同一 attempt 同时只运行一轮；开轮前校验评审器命令与评审范围（Git 的 head/base 必须是真实提交，缺省 base 取分叉点，选项形式的输入被拒绝），校验失败不开新一轮；请求与结果由 tsw 写入 runs/ 下本 attempt 的 review/，每轮请求都带当前需求；评审器以只读方式、配置的模型与 effort 运行：codex-app-server 为只读线程，copilot-cli 为只开放 view/grep/glob 并拒绝写入、命令、记忆与网址的 copilot -p，claude-headless 为清除继承的 CLAUDE*/ANTHROPIC*/TSW* 环境变量、只开放 Read/Grep/Glob、dontAsk、不加载插件、hooks 与 MCP 的 claude -p；评审器都由 tsw 启动，结果由 tsw 读回并记账，不接受交回的结果；不能运行命令的评审器由 tsw 写出本轮的 diff；同一需求周期内能续用的评审器续用上一轮线程并附上 worker 的处置，不能续用的每轮全量并附上一轮的处置与增量 diff；输出满足契约、模型与配置一致且 reviewed_head 与本轮 HEAD 一致（Git 缩写解析为同一提交）时记录 review_complete，否则以及任何开轮后的异常都保存原始输出并记录 review_fail；已删除的评审器（claude-subagent）开启的轮次按当前配置的评审器重试；再次调用按落账的范围在同一轮重试，超出重试次数时记录 review.unavailable；关闭或超时时结束评审器的整个进程树；未实现的评审会话返回 UNSUPPORTED",
+      "acceptance": "只有绑定任务、处于运行状态且在执行目录中的 worker 能运行，同一 attempt 同时只运行一轮；开轮前校验评审器命令与评审范围（Git 的 head/base 必须是真实提交，缺省 base 取分叉点，选项形式的输入被拒绝），校验失败不开新一轮；请求与结果由 tsw 写入 runs/ 下本 attempt 的 review/，每轮请求都带当前需求；评审器以只读方式、配置的模型与 effort 运行：codex-app-server 为只读线程，copilot-cli 为只开放 view/grep/glob 并拒绝写入、命令、记忆与网址的 copilot -p，claude-headless 为清除继承的 CLAUDE*/ANTHROPIC*/TSW* 环境变量、只开放 Read/Grep/Glob、dontAsk、不加载插件、hooks 与 MCP 的 claude -p，pi-cli 为只开放 read/grep/find/ls、不加载扩展、MCP、skill、提示模板与项目上下文、不留会话记录的 pi --print --mode json，实际 provider/model 须与配置一致、最后的回复须正常结束；评审器都由 tsw 启动，结果由 tsw 读回并记账，不接受交回的结果；不能运行命令的评审器由 tsw 写出本轮的 diff；同一需求周期内能续用的评审器续用上一轮线程并附上 worker 的处置，不能续用的每轮全量并附上一轮的处置与增量 diff；输出满足契约、模型与配置一致且 reviewed_head 与本轮 HEAD 一致（Git 缩写解析为同一提交）时记录 review_complete，否则以及任何开轮后的异常都保存原始输出并记录 review_fail；已删除的评审器（claude-subagent）开启的轮次按当前配置的评审器重试；再次调用按落账的范围在同一轮重试，超出重试次数时记录 review.unavailable；关闭或超时时结束评审器的整个进程树；未实现的评审会话返回 UNSUPPORTED",
       "surfaces": [
         "cli",
         "mcp"
@@ -458,7 +458,7 @@
       "id": "UC-REVIEW-004",
       "title": "评审模型的列表与选择：安装、命令行与主会话（DN004 §3.4，T330）",
       "actor": "用户 / 主会话 / 安装入口",
-      "acceptance": "每种评审器从它的命令行读回本机可用的模型而不调用模型：codex-app-server 用 app-server 的 model/list（跟随 nextCursor，不列 hidden），copilot-cli 用 copilot --acp 的 session/new（不列 auto 与未启用的，推理强度取会话的 reasoning_effort 选项），claude-headless 用 claude -p 的控制请求 initialize（清除继承的 CLAUDE*/ANTHROPIC*/TSW* 变量与隔离选项同评审，不列 default，别名附其完整 ID）；命令行不存在、报错、超时或列表为空时给出原因而不失败；预选顺序为当前配置、代码默认值（在列表中时）、宿主默认、第一个，推理强度只能是所选模型支持的；安装的终端入口在选了评审器（不是 none）后从列表问评审模型与推理强度（取不到列表时可输入模型 ID），会话入口用 tsw setup models 取列表，答案写到新数据目录的 roles.reviewer.model / effort，答案中没有时用代码默认值并警告；tsw reviewer models 只读列出模型与当前配置；tsw reviewer set 只在会话外的终端运行（会话中拒绝），缺的项在终端中选择，列表外的模型或强度及取不到列表时没有 --unlisted 即拒绝，确认后与 config_change 同样校验、记 config.changed 并写文件，来源为 tsw 记录的 user-cli 渠道、绑定修改前文件摘要；主会话的 reviewer_models 只读返回列表、当前配置、文件摘要与 ops 示例，config_change 不接受 user-cli 来源",
+      "acceptance": "每种评审器从它的命令行读回本机可用的模型而不调用模型：codex-app-server 用 app-server 的 model/list（跟随 nextCursor，不列 hidden），copilot-cli 用 copilot --acp 的 session/new（不列 auto 与未启用的，推理强度取会话的 reasoning_effort 选项），claude-headless 用 claude -p 的控制请求 initialize，pi-cli 用 pi --list-models 的表格（provider/model）（清除继承的 CLAUDE*/ANTHROPIC*/TSW* 变量与隔离选项同评审，不列 default，别名附其完整 ID）；命令行不存在、报错、超时或列表为空时给出原因而不失败；预选顺序为当前配置、代码默认值（在列表中时）、宿主默认、第一个，推理强度只能是所选模型支持的；安装的终端入口在选了评审器（不是 none）后从列表问评审模型与推理强度（取不到列表时可输入模型 ID），会话入口用 tsw setup models 取列表，答案写到新数据目录的 roles.reviewer.model / effort，答案中没有时用代码默认值并警告；tsw reviewer models 只读列出模型与当前配置；tsw reviewer set 只在会话外的终端运行（会话中拒绝），缺的项在终端中选择，列表外的模型或强度及取不到列表时没有 --unlisted 即拒绝，确认后与 config_change 同样校验、记 config.changed 并写文件，来源为 tsw 记录的 user-cli 渠道、绑定修改前文件摘要；主会话的 reviewer_models 只读返回列表、当前配置、文件摘要与 ops 示例，config_change 不接受 user-cli 来源",
       "surfaces": [
         "cli",
         "mcp"
@@ -1503,7 +1503,7 @@
       "id": "UC-SETUP-001",
       "title": "安装脚本 tsw setup 与两条安装路径的入口（T308，DN009，CC009）",
       "actor": "用户 / 终端入口 setup.ps1 / 会话入口 setup skill",
-      "acceptance": "tsw setup check（只读，--questions 输出唯一的问题清单：数据目录必填、没有默认值，产品检出由入口决定，不问仓库与账号；结果带 ready 与 problems）、plan（只读：每一步的状态、要运行的 claude 命令与用户设置的差异，前提不满足时退出码 3）、install（--answers 文件或 --interactive 在终端逐项提问、显示计划并请用户确认；空的数据目录回答再问一次）按顺序执行 machine、shim、path、plugin、home、user_settings、render、dashboard，每一步已满足就跳过（重跑不运行 claude 命令、不改用户设置、不产生新备份）；改动用户环境的步骤在改动之前把归属写入 %LOCALAPPDATA%\\TaskSteward\\install.json，中途失败后重跑保留第一次记下的归属；垫片 tsw.cmd 与无扩展名的 sh 脚本运行检出中的 tsw_launch.py；用户级 Path 只追加垫片目录一项（保留原有项与类型）；插件来源经 claude plugin marketplace add <检出> 指向检出（已从别处安装时改指、不重装），没有安装时 claude plugin install；新数据目录写初始配置（语言、评审器及从其模型列表选的评审模型与推理强度（UC-REVIEW-004）、人类渠道、宿主、Dashboard 端口，不含仓库与账号）并记 product_repo 与 .local/tsw-home，已有数据目录不改配置、只报告差异，非空的其他目录被拒绝；用户同意时先备份再写 Claude Code 用户设置的 env.TSW_HOME、env.TSW_PYTHON 与 tsw 的 auto 模式规则（按规则名替换旧文本，其他内容不动；之后的版本新增的规则在重跑写入前补记为安装加入的，用户原有的同名规则记为原有），不同意时输出要手工合并的文本；host render；用户选择时登记 Dashboard 计划任务（--no-browser 时不打开浏览器）；安装阶段的 verify 核对垫片、PATH 持久值、插件来源与副本、数据目录定位、配置、用户设置、Dashboard 与不加载用户 site-packages 时 MCP 握手，PATH 生效列为 pending_reload；verify --after-reload 另核对 PATH 中的 tsw 是垫片、update-plan 的 pending 为空；uninstall 按记录删除 Dashboard 服务、插件与市场、自己加入的用户设置（仍等于写入值的 env 键恢复原值或删除，原有的规则保留）、垫片与自己加入的 PATH 项，数据目录永不删除，没有安装记录时拒绝；setup.ps1 用 plugin/setup/prereq.ps1 探测 Python 3.10+（跳过 WindowsApps 占位程序）、git 与 claude（PATH，再 %LOCALAPPDATA%\\Programs\\ClaudeCode\\claude.exe），缺少时经同意用 winget 安装，再以完整路径运行 tsw setup install --interactive；fetch_checkout.py 把产品仓库克隆到固定位置并检出已安装插件的 gitCommitSha，已有检出只校验同一仓库与工作区干净；插件的 setup skill 只在用户要求安装、修复、升级或卸载时使用；插件的 MCP 与 hooks 用 ${TSW_PYTHON:-python} 运行；update-plan 的 install 类别（pyproject.toml、setup.ps1、tsw/setup/）与 host_rules 在 tsw setup 安装的机器上由主会话重跑 tsw setup install；host install-hint 与 tsw setup 同源；host render 更新插件时优先用 install.json 记录的 claude；在还没有绑定数据目录的会话中运行的 install 结束时把该会话记为让出租约（controller.lease_stood_down，via setup），输出 install_session；主会话中重跑不记；install 的 next 说明重启 Claude app、在数据目录新建主会话并输入“开始示例任务”（demo_prompt）",
+      "acceptance": "tsw setup check（只读，--questions 输出唯一的问题清单：数据目录必填、没有默认值，产品检出由入口决定，不问仓库与账号；结果带 ready 与 problems）、plan（只读：每一步的状态、要运行的 claude 命令与用户设置的差异，前提不满足时退出码 3）、install（--answers 文件或 --interactive 在终端逐项提问、显示计划并请用户确认；空的数据目录回答再问一次）按顺序执行 machine、shim、path、plugin、home、user_settings、render、dashboard，每一步已满足就跳过（重跑不运行 claude 命令、不改用户设置、不产生新备份）；改动用户环境的步骤在改动之前把归属写入 %LOCALAPPDATA%\\TaskSteward\\install.json，中途失败后重跑保留第一次记下的归属；垫片 tsw.cmd 与无扩展名的 sh 脚本运行检出中的 tsw_launch.py；用户级 Path 只追加垫片目录一项（保留原有项与类型）；插件来源经 claude plugin marketplace add <检出> 指向检出（已从别处安装时改指、不重装），没有安装时 claude plugin install；新数据目录写初始配置（语言、评审器及从其模型列表选的评审模型与推理强度（UC-REVIEW-004）、人类渠道、宿主、Dashboard 端口，不含仓库与账号）并记 product_repo 与 .local/tsw-home，已有数据目录不改配置、只报告差异，非空的其他目录被拒绝；用户同意时先备份再写 Claude Code 用户设置的 env.TSW_HOME、env.TSW_PYTHON 与 tsw 的 auto 模式规则（按规则名替换旧文本，其他内容不动；之后的版本新增的规则在重跑写入前补记为安装加入的，用户原有的同名规则记为原有），不同意时输出要手工合并的文本；host render；用户选择时登记 Dashboard 计划任务（--no-browser 时不打开浏览器）；安装阶段的 verify 核对垫片、PATH 持久值、插件来源与副本、数据目录定位、配置、用户设置、Dashboard 与不加载用户 site-packages 时 MCP 握手，PATH 生效列为 pending_reload；verify --after-reload 另核对 PATH 中的 tsw 是垫片、update-plan 的 pending 为空；uninstall 按记录删除 Dashboard 服务、插件与市场、自己加入的用户设置（仍等于写入值的 env 键恢复原值或删除，原有的规则保留）、垫片与自己加入的 PATH 项，数据目录永不删除，没有安装记录时拒绝；setup.ps1 用 plugin/setup/prereq.ps1 探测 Python 3.10+（跳过 WindowsApps 占位程序）、git 与 claude（PATH，再 %LOCALAPPDATA%\\Programs\\ClaudeCode\\claude.exe），缺少时经同意用 winget 安装，再以完整路径运行 tsw setup install --interactive；fetch_checkout.py 把产品仓库克隆到固定位置并检出已安装插件的 gitCommitSha，已有检出只校验同一仓库与工作区干净；插件的 setup skill 只在用户要求安装、修复、升级或卸载时使用；插件的 MCP 与 hooks 用 ${TSW_PYTHON:-python} 运行；update-plan 的 install 类别（pyproject.toml、setup.ps1、tsw/setup/）与 host_rules 在 tsw setup 安装的机器上由主会话重跑 tsw setup install；host install-hint 与 tsw setup 同源；host render 更新插件时优先用 install.json 记录的 claude；在还没有绑定数据目录的会话中运行的 install 结束时把该会话记为让出租约（controller.lease_stood_down，via setup），输出 install_session；主会话中重跑不记；install 的 next 说明重启 Claude app、在数据目录新建主会话并输入“开始示例任务”（demo_prompt）；Linux / WSL 上 setup.sh 探测 Python 3.10+ 与 git 后运行 tsw setup install --interactive，垫片是状态目录中的启动脚本与 ~/.local/bin/tsw 指向它的符号链接（已有别的 tsw 时拒绝、不替换，卸载只删自己的链接），不修改 PATH：~/.local/bin 不在 PATH 时 path 步骤为 manual 并给出 export 行",
       "surfaces": [
         "cli"
       ],
@@ -1631,6 +1631,90 @@
       "omittedTiers": {
         "conformance": "不经过插件接口",
         "live": "需要用户从 workdeck 门户配合给会话发消息；在隔离的会话中实测并作为任务证据记录，不是可重复的 live 场景"
+      }
+    },
+    {
+      "id": "UC-PI-001",
+      "title": "pi 上的 worker 会话：tsw pi serve 持有 pi --mode rpc，主会话创建、投递、停止，用户 tsw pi chat 直接对话（PI001 §5）",
+      "actor": "主会话（pi 扩展）/ worker / 用户 / tsw CLI",
+      "acceptance": "tsw pi start 只为 attempt_start 已落账、处于 starting 的 session_name 创建会话，会话目录须是该 attempt 的执行目录或其中的 worktree，调用者须是主会话；每个数据目录一个 tsw pi serve（文件锁，第二个立即退出），在只有本用户能进入的目录中监听 Unix 套接字，按需由客户端以独立进程组启动，没有运行中的 worker 一段时间后退出；worker 以 pi --mode rpc --session-id <会话名> -e <检出>/pi 在会话目录启动，环境带 TSW_SESSION_ID=pi:<会话名> 与 TSW_HOME，启动前写会话状态；首条 RPC prompt 是 attempt_start 返回的 prompt；运行中再投递用 followUp（chat 用 steer）；停止的 worker 收到消息时以同一会话 ID 与目录恢复；tsw pi send 给服务器持有的 worker 投递、给其他会话（主会话）写邮箱，内容带 <cross-session-message> 包装，不算用户的话；tsw pi list 列出会话；tsw pi chat 在会话中拒绝，在终端中显示 worker 完成的回复并逐行投递用户输入；服务器只在内存中保留最近的回复，不写模型输出；客户端发送前核对套接字目录是本用户的真实目录、他人不能进入、套接字属于本用户，Linux 上核对对端用户；pi 退出时结束它的整个进程组，恢复前结束旧的；写命令与等待回应各有时限，超时结束 pi；退出中的服务拒绝新的请求",
+      "surfaces": [
+        "cli"
+      ],
+      "claims": [
+        "cli:pi serve",
+        "cli:pi start",
+        "cli:pi send",
+        "cli:pi stop",
+        "cli:pi list",
+        "cli:pi chat"
+      ],
+      "component": "host",
+      "status": "active",
+      "platforms": [
+        "posix"
+      ],
+      "requiredTiers": [
+        "unit",
+        "component",
+        "surface"
+      ],
+      "omittedTiers": {
+        "conformance": "不经过插件接口的一致性套件；pi 由替身 tests/fixtures/fake_pi.py 代替（模拟）",
+        "live": "pi 的 live 场景（PI001 §10 的 pi-e2e）尚未实现：真实 pi 上未验证，本层级报告为未验证"
+      }
+    },
+    {
+      "id": "UC-PI-002",
+      "title": "pi 扩展经 tsw 识别会话、注册 tsw 工具、过护栏、轮询唤醒（PI001 §4、§5.3、§6）",
+      "actor": "pi 扩展 / 主会话 / worker",
+      "acceptance": "会话身份依次取 TSW_SESSION_ID、CLAUDE_CODE_HOST_SESSION_ID、pi 的 PI_SESSION_ID（加 pi: 前缀）；tsw pi whoami 返回角色、tsw MCP server 的启动方式与 TaskSteward 会话的 pi 说明（无关会话为空）；tsw pi guard 把 pi 的 write/edit/bash 转为 guard 认识的 Write/Edit/Bash（path→file_path）再经同一个 tsw guard，拒绝时返回 block 与原因，上下文与 Stop 的继续原样返回；tsw pi poll 取走主会话邮箱中的消息，持租主会话另得到到期未答的会话内问题；只读的 read/grep/find/ls 也经 guard（Dashboard 令牌目录 CC-B12）；会话的 shell 中运行 tsw pi guard 被拒绝，tsw pi 的其他命令按 pi 命令组识别",
+      "surfaces": [
+        "cli",
+        "hook"
+      ],
+      "claims": [
+        "cli:pi whoami",
+        "cli:pi poll",
+        "cli:pi guard"
+      ],
+      "component": "host",
+      "status": "active",
+      "platforms": [
+        "posix"
+      ],
+      "requiredTiers": [
+        "unit",
+        "component",
+        "surface"
+      ],
+      "omittedTiers": {
+        "conformance": "不经过插件接口的一致性套件",
+        "live": "pi 的 live 场景（PI001 §10 的 pi-e2e）尚未实现：真实 pi 上未验证，本层级报告为未验证"
+      }
+    },
+    {
+      "id": "UC-PI-003",
+      "title": "以 pi 为宿主安装与 render（PI001 §8）",
+      "actor": "用户 / tsw setup",
+      "acceptance": "本机有 pi 时安装才提供宿主 pi，找不到 claude 而有 pi 时默认 pi；宿主 pi 的新数据目录配置为 plugins.host_integration pi、主会话 pi-tui、worker pi-rpc（模型 default，即 pi 自己的）、例行会话关闭，且通过校验（宿主 pi 时其他会话适配器、开启例行会话或 teams-chat 报错，权限模式只警告）；pi 的模型写作 provider/model；install 用 pi install <检出>/pi 安装 pi 包（已声明时跳过），不写 Claude Code 用户设置、不接入 workdeck，render 另把 skill 复制到 .pi/skills，verify 核对 pi_package；uninstall 用 pi remove 移除安装加入的 pi 包；next 说明在数据目录运行 pi 并输入 /skill:orchestrate；pi 包的归属记在安装记录自己的 pi_package 步骤，安装前就已声明的 pi 包卸载时保留；移除 pi 包失败（包括找不到 pi）时卸载停在这一步、保留垫片与安装记录（uninstalling），修正后可再运行",
+      "surfaces": [
+        "cli"
+      ],
+      "claims": [],
+      "component": "host",
+      "status": "active",
+      "platforms": [
+        "posix"
+      ],
+      "requiredTiers": [
+        "unit",
+        "component"
+      ],
+      "omittedTiers": {
+        "surface": "tsw setup 的命令行表面由 UC-SETUP-001 认领；本项在 component 中经独立进程运行 tsw setup 与替身 pi",
+        "conformance": "不经过插件接口的一致性套件",
+        "live": "pi 的 live 场景（PI001 §10 的 pi-e2e）尚未实现：真实 pi 上未验证，本层级报告为未验证"
       }
     }
   ]

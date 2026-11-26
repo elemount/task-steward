@@ -119,6 +119,8 @@ def last_json(text: str) -> dict[str, Any]:
 
 
 def user_path() -> tuple[str | None, int]:
+    if sys.platform != "win32":
+        raise RuntimeError("the setup live scenario runs on Windows only")
     import winreg  # noqa: PLC0415
 
     try:
@@ -130,6 +132,8 @@ def user_path() -> tuple[str | None, int]:
 
 
 def machine_path() -> str:
+    if sys.platform != "win32":
+        raise RuntimeError("the setup live scenario runs on Windows only")
     import winreg  # noqa: PLC0415
 
     name = r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
@@ -467,6 +471,8 @@ def bash() -> str:
 
 
 def restore_path(original: str | None, kind: int) -> None:
+    if sys.platform != "win32":
+        raise RuntimeError("the setup live scenario runs on Windows only")
     import winreg  # noqa: PLC0415
 
     current, _ = user_path()

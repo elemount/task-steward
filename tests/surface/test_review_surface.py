@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -12,7 +13,7 @@ from typing import Any
 import pytest
 
 from tests.machine_harness import ORCH, Harness
-from tests.support import REPO_ROOT, child_env, run_tsw
+from tests.support import REPO_ROOT, child_env, run_tsw, stand_in
 from tsw import lease
 from tsw.errors import TswError
 from tsw.home import Home
@@ -25,8 +26,7 @@ FAKE = REPO_ROOT / "tests" / "fixtures" / "fake_codex_app_server.py"
 
 
 def fake_codex(tmp_path: Path, answers: list[Any]) -> tuple[Path, dict[str, str]]:
-    wrapper = tmp_path / "codex.cmd"
-    wrapper.write_text(f'@"{sys.executable}" "{FAKE}" %*\r\n', encoding="utf-8")
+    wrapper = stand_in(tmp_path / "codex", FAKE)
     (tmp_path / "answers.json").write_text(json.dumps(answers), encoding="utf-8")
     return wrapper, {
         "FAKE_CODEX_ANSWERS": str(tmp_path / "answers.json"),
@@ -101,10 +101,31 @@ def test_a_failed_round_over_mcp_is_retried_from_the_command_line(
 
 
 def alive(pid: int) -> bool:
+    if sys.platform != "win32":
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        # A zombie (ended, not yet reaped by its parent) has ended too; the entry may go while
+        # it is read.
+        try:
+            return Path(f"/proc/{pid}/stat").read_text().split(")")[-1].split()[0] != "Z"
+        except (OSError, IndexError):
+            return False
     listing = subprocess.run(
         ["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True, check=False
     )
     return str(pid) in listing.stdout
+
+
+def gone(pid: int, wait: float = 10.0) -> bool:
+    """The process has ended, allowing the moment a kill takes to land."""
+    deadline = time.monotonic() + wait
+    while alive(pid):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.1)
+    return True
 
 
 def test_closing_the_server_ends_the_wrapper_and_its_child(
@@ -112,8 +133,7 @@ def test_closing_the_server_ends_the_wrapper_and_its_child(
 ) -> None:
     pid_file = tmp_path / "child.pid"
     stubborn = REPO_ROOT / "tests" / "fixtures" / "stubborn_server.py"
-    wrapper = tmp_path / "server.cmd"
-    wrapper.write_text(f'@"{sys.executable}" "{stubborn}" "{pid_file}"\r\n', encoding="utf-8")
+    wrapper = stand_in(tmp_path / "server", stubborn, pid_file, forward=False)
     monkeypatch.setattr(AppServer, "close_wait", 0.5)
     server = AppServer(str(wrapper))
     deadline = time.monotonic() + 30
@@ -123,7 +143,7 @@ def test_closing_the_server_ends_the_wrapper_and_its_child(
     assert alive(child)
     server.close()
     assert server.proc.poll() is not None
-    assert not alive(child)
+    assert gone(child)
 
 
 def test_a_child_left_holding_the_pipe_is_ended_without_waiting_for_it(
@@ -131,11 +151,12 @@ def test_a_child_left_holding_the_pipe_is_ended_without_waiting_for_it(
 ) -> None:
     pid_file = tmp_path / "child.pid"
     fixtures = REPO_ROOT / "tests" / "fixtures"
-    wrapper = tmp_path / "server.cmd"
-    wrapper.write_text(
-        f'@"{sys.executable}" "{fixtures / "orphaning_server.py"}" '
-        f'"{fixtures / "stubborn_server.py"}" "{pid_file}"\r\n',
-        encoding="utf-8",
+    wrapper = stand_in(
+        tmp_path / "server",
+        fixtures / "orphaning_server.py",
+        fixtures / "stubborn_server.py",
+        pid_file,
+        forward=False,
     )
     monkeypatch.setattr(AppServer, "close_wait", 5.0)
     server = AppServer(str(wrapper))
@@ -147,15 +168,17 @@ def test_a_child_left_holding_the_pipe_is_ended_without_waiting_for_it(
     server.close()  # the wrapper exits at end of input; its grandchild does not
     assert time.monotonic() - started < 20
     assert server.proc.poll() is not None
-    assert not alive(child)
+    assert gone(child)
 
 
+@pytest.mark.windows
 def test_without_a_job_the_reviewer_never_runs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     pid_file = tmp_path / "child.pid"
     stubborn = REPO_ROOT / "tests" / "fixtures" / "stubborn_server.py"
-    monkeypatch.setattr(process._kernel32, "AssignProcessToJobObject", lambda *_: 0)  # pyright: ignore[reportUnknownLambdaType]
+    kernel32: Any = getattr(process, "_kernel32")  # noqa: B009  (Windows only)
+    monkeypatch.setattr(kernel32, "AssignProcessToJobObject", lambda *_: 0)  # pyright: ignore[reportUnknownLambdaType]
     with pytest.raises(TswError) as refused:
         process.ProcessTree([sys.executable, str(stubborn), str(pid_file)])
     assert refused.value.details["reason"] == "reviewer_unavailable"
@@ -188,9 +211,8 @@ def mcp_call(arguments: dict[str, Any], env: dict[str, str], cwd: Path) -> dict[
 def test_claude_reviews_over_mcp_without_the_hosts_variables(home: Home, tmp_path: Path) -> None:
     # claude-headless (CC004): tsw starts claude -p itself and reads the answer back; the MCP
     # server runs inside a Claude Code session, whose variables never reach the reviewer.
-    wrapper = tmp_path / "claude.cmd"
     fake = REPO_ROOT / "tests" / "fixtures" / "fake_claude.py"
-    wrapper.write_text(f'@"{sys.executable}" "{fake}" %*\r\n', encoding="utf-8")
+    wrapper = stand_in(tmp_path / "claude", fake)
     (tmp_path / "answers.json").write_text(json.dumps(["echo-pass"]), encoding="utf-8")
     reviewer = {"session": "claude-headless", "model": "sonnet", "executable": str(wrapper)}
     h = Harness(home, {"roles": {"reviewer": reviewer}})

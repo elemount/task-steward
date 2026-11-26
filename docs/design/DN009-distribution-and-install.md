@@ -2,7 +2,7 @@
 
 - 状态：已确认（T305；用户 2026-11-19 确认两条安装路径与本文的 D1–D3，插件名不改；同日决定数据目录必填、setup 不配置仓库，§6）；§15 安装后的引导与示例任务（T308，用户 2026-11-20 确认）；§5 第 7 步接入 workdeck（T309，用户 2026-11-20 确认）；§16 终端入口的交互（T326，用户 2026-11-21 确认，M-T326-1）
 - 日期：2026-11-19
-- 相关：[DN001 总体架构](DN001-architecture.md) · [DN003 统一配置](DN003-unified-config.md) · [DN006 插件层](DN006-plugin-layer.md) · [DN008 校验原则](DN008-guardrails.md) · 实现：[CC009 Claude Code 上的安装](claude-code/CC009-install.md)
+- 相关：[DN001 总体架构](DN001-architecture.md) · [DN003 统一配置](DN003-unified-config.md) · [DN006 插件层](DN006-plugin-layer.md) · [DN008 校验原则](DN008-guardrails.md) · 实现：[CC009 Claude Code 上的安装](claude-code/CC009-install.md) · Pi 上的安装（提议）：[PI001 §8](pi/PI001-host-and-sessions.md)
 
 ## 1. 目标与范围
 
@@ -166,13 +166,13 @@ tsw 的工具服务在会话启动时载入（DN006 §9.8），用户级 PATH �
 
 | 项 | Windows | macOS / Linux |
 | --- | --- | --- |
-| 终端入口与探测 | `setup.ps1`（Windows PowerShell 5.1 自带）；winget | `setup.sh`（POSIX sh）；Homebrew / 发行版包管理器 |
+| 终端入口与探测 | `setup.ps1`（Windows PowerShell 5.1 自带）；winget | `setup.sh`（POSIX sh）：探测 Python 3.10+ 与 git，缺少时说明用发行版包管理器安装，不替用户安装 |
 | 解释器命令名 | `python` | 常见只有 `python3`：插件中写死的解释器命令要改为可配置 |
-| 垫片与 PATH | `tsw.cmd` 与无扩展名的 sh 脚本（Git Bash 用）；用户级 `Path` | `~/.local/bin/tsw` 一个 sh 脚本；不在 PATH 时提示用户改 shell 配置，不自动改 |
+| 垫片与 PATH | `tsw.cmd` 与无扩展名的 sh 脚本（Git Bash 用）；用户级 `Path` | 启动脚本放在状态目录的 `bin/tsw`，`~/.local/bin/tsw` 是指向它的符号链接（已有别的 `tsw` 时拒绝，不替换）；`~/.local/bin` 不在 PATH 时提示用户改 shell 配置，不自动改 |
 | Dashboard 常驻 | 已实现（DN006 §8.10） | 未实现 |
-| 安装记录与令牌目录 | `%LOCALAPPDATA%\TaskSteward\` | 待定（如 `~/Library/Application Support/TaskSteward`、`$XDG_STATE_HOME/TaskSteward`） |
+| 安装记录与令牌目录 | `%LOCALAPPDATA%\TaskSteward\` | `$XDG_STATE_HOME/task-steward/`（缺省 `~/.local/state/task-steward/`） |
 
-先实现 Windows。
+先实现 Windows；Linux / WSL 的终端入口、垫片与安装记录按上表实现（宿主为 pi 时的其余步骤见 [PI001 §8](pi/PI001-host-and-sessions.md)，提议），macOS 未验证。
 
 ## 13. 对其他文档的影响
 

@@ -2,7 +2,7 @@
 
 - 状态：设计草案（T233 r5，已按 PoC 结果修订；T325 修订评审器实现与可关闭的自评审；T331 Claude 评审器改为由 tsw 启动的 `claude-headless`，删除子代理方式；T330 §3.4 评审模型的列表与选择，待用户确认）
 - 日期：2026-11-05
-- 相关：[DN002 任务状态机 §3.3](DN002-task-state-machine.md) · [DN003 统一配置](DN003-unified-config.md) · 实现：[CX004 Codex 评审器](codex/CX004-reviewer.md) · [CC004 Claude Code 评审器](claude-code/CC004-reviewer.md) · [CP004 Copilot CLI 评审器](copilot/CP004-reviewer.md)
+- 相关：[DN002 任务状态机 §3.3](DN002-task-state-machine.md) · [DN003 统一配置](DN003-unified-config.md) · 实现：[CX004 Codex 评审器](codex/CX004-reviewer.md) · [CC004 Claude Code 评审器](claude-code/CC004-reviewer.md) · [CP004 Copilot CLI 评审器](copilot/CP004-reviewer.md) · [PI004 Pi CLI 评审器](pi/PI004-reviewer.md)（提议）
 
 ## 1. 目标与变化
 
@@ -56,12 +56,13 @@ worker 完成任务成果后，**由 worker 自己**启动配置的只读评审�
 | `codex-exec`（回退，尚未实现） | 同步：`codex exec` | `--sandbox read-only` | 每轮全量并附上轮意见 | [CX004 §3](codex/CX004-reviewer.md) |
 | `claude-headless` | 同步：`claude -p` 非交互 | 只开放 `Read`、`Grep`、`Glob`，`dontAsk`，不加载插件、hooks 与 MCP | 续用会话（`--resume`），只审增量 | [CC004](claude-code/CC004-reviewer.md) |
 | `copilot-cli` | 同步：`copilot -p` 非交互 | 只开放 `view`、`grep`、`glob`，拒绝 `write`、`shell`、`memory`、`url` | 续用会话（`--resume`），只审增量 | [CP004](copilot/CP004-reviewer.md) |
+| `pi-cli`（提议） | 同步：`pi --print --mode json` | 只开放 `read`、`grep`、`find`、`ls`，不加载扩展、MCP、skill 与项目上下文 | 每轮全量并附上轮处置 | [PI004](pi/PI004-reviewer.md) |
 
 所有实现共同的规则：
 
 - 使用配置指定的模型与 effort。模型不可用、effort 不支持，或评审器实际使用的模型与请求不一致（包括宿主或管理策略换了模型）时判为本轮失败，**不回退到其他模型**。
 - 默认评审器与回退都失败时记录 `review.unavailable` 交主会话判断（可稍后重试或交给人类），**不能跳过评审**（自评审关闭的情形见 §9），**也不能改用配置以外的评审器**：worker 自己启动的子代理不是评审器，它的结论不能代替一轮评审。
-- 不能运行命令的评审器（`claude-headless`、`copilot-cli`）由 tsw 把本轮范围的完整 diff 写入 `review/rK-diff.patch`（续用线程的增量轮次只写增量；不续用时在后续轮次另有上一轮 HEAD 以来的 `rK-diff-since.patch`），请求中给出路径。评审器只读查阅执行目录、报告草稿与评审包，不运行测试；测试与验证结果以 worker 在 `notes` 中写明的为准，评审器把无法核实的事项列入 `unverified`。
+- 不能运行命令的评审器（`claude-headless`、`copilot-cli`、`pi-cli`）由 tsw 把本轮范围的完整 diff 写入 `review/rK-diff.patch`（续用线程的增量轮次只写增量；不续用时在后续轮次另有上一轮 HEAD 以来的 `rK-diff-since.patch`），请求中给出路径。评审器只读查阅执行目录、报告草稿与评审包，不运行测试；测试与验证结果以 worker 在 `notes` 中写明的为准，评审器把无法核实的事项列入 `unverified`。
 
 ### 3.2 v1 实现范围
 

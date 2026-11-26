@@ -39,6 +39,8 @@ def answers_path(env: Mapping[str, str]) -> Path:
 
 def shim_dir(env: Mapping[str, str]) -> Path:
     """Where the ``tsw`` shims go: ``%LOCALAPPDATA%\\TaskSteward\\bin`` (CC009 §8)."""
+    if os.name == "posix":
+        return Path(env.get("HOME") or Path.home()) / ".local" / SHIM_DIR
     return state_dir(env) / SHIM_DIR
 
 

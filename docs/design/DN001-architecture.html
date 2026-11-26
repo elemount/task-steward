@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="tsw-source-sha256" content="cddd2eb7512cb50ae014e6c0a0faf83170fabef3e5d6bc72c1de712bc7d5b481">
+<meta name="tsw-source-sha256" content="12cdb71771d661819a62fbfab43d2f97d50e4bf139162b40a983153bf2499e3b">
 <title>DN001 总体架构：TaskSteward 任务编排器（默认宿主 Claude Code）</title>
 <style>
 :root{--fg:#1f2430;--muted:#5b6475;--line:#d9dee8;--accent:#3b5bdb;--bg-soft:#f6f8fc;--code:#f3f4f8}
@@ -45,7 +45,7 @@ footer{margin-top:48px;color:var(--muted);font-size:12px;border-top:1px solid va
 <nav class="toc"><h2>目录</h2><a class="l2" href="#1-背景">1. 背景</a><a class="l2" href="#2-目标与非目标">2. 目标与非目标</a><a class="l2" href="#3-术语">3. 术语</a><a class="l2" href="#4-总体架构">4. 总体架构</a><a class="l2" href="#5-角色与职责">5. 角色与职责</a><a class="l2" href="#6-会话模型">6. 会话模型</a><a class="l3" href="#61-主会话">6.1 主会话</a><a class="l3" href="#62-worker-子会话的创建">6.2 worker 子会话的创建</a><a class="l3" href="#63-平台约束与派发策略">6.3 平台约束与派发策略</a><a class="l3" href="#64-调度租约">6.4 调度租约</a><a class="l3" href="#65-用户直接与-worker-对话">6.5 用户直接与 worker 对话</a><a class="l3" href="#66-子代理的使用边界">6.6 子代理的使用边界</a><a class="l2" href="#7-工具面">7. 工具面</a><a class="l3" href="#71-角色解析">7.1 角色解析</a><a class="l3" href="#72-按角色的-mcp-工具">7.2 按角色的 MCP 工具</a><a class="l3" href="#73-宿主集成的检查点">7.3 宿主集成的检查点</a><a class="l2" href="#8-数据与存储">8. 数据与存储</a><a class="l3" href="#81-数据目录布局">8.1 数据目录布局</a><a class="l3" href="#82-事件格式">8.2 事件格式</a><a class="l3" href="#83-runs-目录">8.3 runs 目录</a><a class="l2" href="#9-端到端流程">9. 端到端流程</a><a class="l2" href="#10-与-orchestrator-agent-的对比">10. 与 orchestrator-agent 的对比</a><a class="l2" href="#11-关键决策">11. 关键决策</a><a class="l2" href="#12-平台假设的-poc-结果">12. 平台假设的 PoC 结果</a><a class="l2" href="#13-文档索引">13. 文档索引</a></nav>
 <main>
 <h1>DN001 总体架构：TaskSteward 任务编排器（默认宿主 Claude Code）</h1>
-<ul><li>状态：设计草案（T233 r5，已按 PoC 结果修订）</li><li>日期：2026-11-05</li><li>相关：<a href="DN002-task-state-machine.html">DN002 任务状态机</a> · <a href="DN003-unified-config.html">DN003 统一配置</a> · <a href="DN004-worker-self-review.html">DN004 worker 自评审</a> · <a href="DN005-history-import-and-resume.html">DN005 历史导入与 resume</a> · <a href="DN006-plugin-layer.html">DN006 插件层</a> · <a href="DN007-ledger-and-context.html">DN007 账本与上下文检索</a> · <a href="DN008-guardrails.html">DN008 校验原则</a> · 实现：<a href="claude-code/CC001-sessions-and-hooks.html">CC001 Claude Code 上的会话与 hooks</a></li></ul>
+<ul><li>状态：设计草案（T233 r5，已按 PoC 结果修订）</li><li>日期：2026-11-05</li><li>相关：<a href="DN002-task-state-machine.html">DN002 任务状态机</a> · <a href="DN003-unified-config.html">DN003 统一配置</a> · <a href="DN004-worker-self-review.html">DN004 worker 自评审</a> · <a href="DN005-history-import-and-resume.html">DN005 历史导入与 resume</a> · <a href="DN006-plugin-layer.html">DN006 插件层</a> · <a href="DN007-ledger-and-context.html">DN007 账本与上下文检索</a> · <a href="DN008-guardrails.html">DN008 校验原则</a> · 实现：<a href="claude-code/CC001-sessions-and-hooks.html">CC001 Claude Code 上的会话与 hooks</a> · Pi 上的实现（提议）：<a href="pi/PI001-host-and-sessions.html">PI001</a></li></ul>
 <h2 id="1-背景">1. 背景</h2>
 <p>上一代实现 <strong>orchestrator-agent</strong> 由 Codex 或 Copilot 主会话按 skill 约定调度，Python 账本只记账和设门禁，不调用模型。约定大量写在 <code>AGENTS.md</code> 和 skill 里，执行靠模型自觉；平台差异分散在两份平台参考里。</p>
 <p>本设计保留它的领域模型（仓库配置、研究 / 设计 / 开发三类任务、worktree、集成、PR 与产出登记、用户验收、归档），并做三点改变：</p>

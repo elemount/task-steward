@@ -19,7 +19,7 @@
     },
     {
       "name": "runtime",
-      "paths": ["tsw/**", "plugin/**", ".claude-plugin/**", "setup.ps1"],
+      "paths": ["tsw/**", "plugin/**", "pi/**", ".claude-plugin/**", "setup.ps1", "setup.sh"],
       "stages": ["lint", "docs", "test"]
     },
     {

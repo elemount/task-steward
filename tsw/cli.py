@@ -38,9 +38,9 @@ from tsw.host.guard import run as run_guard
 from tsw.host.identity import (
     HOST_CLI_COMMANDS,
     MAIN_SESSION_CLI_COMMANDS,
-    SESSION_ENV,
     SETUP_CLI_COMMANDS,
     Identity,
+    session_of,
 )
 from tsw.host.identity import resolve as resolve_identity
 from tsw.host.mcp import serve
@@ -609,12 +609,91 @@ def _cmd_guard(args: argparse.Namespace) -> dict[str, Any]:
     return {"_silent": True}
 
 
+def _cmd_pi_serve(args: argparse.Namespace) -> dict[str, Any]:
+    from tsw.host import pi_sessions  # noqa: PLC0415  (pi only)
+
+    return pi_sessions.serve(_home(args))
+
+
+def _cmd_pi_whoami(args: argparse.Namespace) -> dict[str, Any]:
+    from tsw.host import pi_cli  # noqa: PLC0415
+
+    return pi_cli.whoami(_home(args), os.environ, Path.cwd())
+
+
+def _cmd_pi_start(args: argparse.Namespace) -> dict[str, Any]:
+    from tsw.host import pi_cli  # noqa: PLC0415
+
+    prompt = Path(args.prompt_file).read_text(encoding="utf-8") if args.prompt_file else args.prompt
+    return pi_cli.start(
+        _home(args),
+        os.environ,
+        Path.cwd(),
+        name=args.name,
+        folder=Path(args.cwd),
+        prompt=prompt or "",
+        title=args.title,
+    )
+
+
+def _cmd_pi_send(args: argparse.Namespace) -> dict[str, Any]:
+    from tsw.host import pi_cli  # noqa: PLC0415
+
+    message = (
+        Path(args.message_file).read_text(encoding="utf-8") if args.message_file else args.message
+    )
+    return pi_cli.send(_home(args), os.environ, target=args.to, message=message or "")
+
+
+def _cmd_pi_stop(args: argparse.Namespace) -> dict[str, Any]:
+    from tsw.host import pi_cli  # noqa: PLC0415
+
+    return pi_cli.stop(_home(args), os.environ, Path.cwd(), name=args.name)
+
+
+def _cmd_pi_list(args: argparse.Namespace) -> dict[str, Any]:
+    from tsw.host import pi_sessions  # noqa: PLC0415
+
+    return pi_sessions.request(_home(args), {"op": "list"}, start=False) | {
+        "known": [p.stem for p in sorted(pi_sessions.folder(_home(args)).glob("*.json"))]
+    }
+
+
+def _cmd_pi_poll(args: argparse.Namespace) -> dict[str, Any]:
+    from tsw.host import pi_cli  # noqa: PLC0415
+
+    return pi_cli.poll(_home(args), os.environ, Path.cwd())
+
+
+def _cmd_pi_guard(args: argparse.Namespace) -> dict[str, Any]:
+    from tsw.host import pi_cli  # noqa: PLC0415
+
+    root = Path(args.home) if args.home else resolve_home(repo_root=REPO_ROOT)
+    if not (root / "tsw-home.json").is_file():
+        return {}
+    return pi_cli.guard(args.event, open_home(root), dict(os.environ), sys.stdin.read())
+
+
+def _cmd_pi_chat(args: argparse.Namespace) -> dict[str, Any]:
+    from tsw.host import pi_cli  # noqa: PLC0415
+
+    return pi_cli.chat(_home(args), os.environ, args.target)
+
+
 def _cmd_host_render(args: argparse.Namespace) -> dict[str, Any]:
     home = _home(args)
     with FsStorage(home).writer():
         written = render_instructions(home)
+        on_pi = load_config(home).get("plugins.host_integration") == "pi"
+        if on_pi:
+            from tsw.host import pi_render  # noqa: PLC0415  (pi only)
+
+            written += pi_render.render(home, written)
         # The commit now rendered: where the next self-update starts (DN006 §9.9).
         record_render(home, render_record())
+    if on_pi:
+        # pi loads the extension from the checkout itself: no copy to update (PI001 §8).
+        return {"written": [str(p) for p in written], "plugin": {"ok": True, "host": "pi"}}
     # Keeping the host current is part of rendering for it: the plugin is Claude Code's cached
     # copy, which only Claude Code's own update replaces (T247; idempotent).
     return {
@@ -849,7 +928,7 @@ def _cmd_review_run(args: argparse.Namespace) -> dict[str, Any]:
     notes = args.notes
     if args.notes_file:
         notes = Path(args.notes_file).read_text(encoding="utf-8")
-    if not os.environ.get(SESSION_ENV):
+    if not session_of(os.environ):
         raise TswError(
             ErrorCode.REJECTED, "需要在绑定任务的 worker 会话中运行", reason="role_denied"
         )
@@ -1120,6 +1199,34 @@ def build_parser() -> argparse.ArgumentParser:
         )
         command.add_argument("--git", help="git 的完整路径（不在 PATH 中时）")
 
+    pi = sub.add_parser("pi", help="pi 宿主：主会话扩展与 RPC worker（PI001）").add_subparsers(
+        dest="pi_command", required=True, metavar="<pi command>"
+    )
+    add(pi, "serve", _cmd_pi_serve, "持有本数据目录的 pi worker 会话（由扩展按需启动）")
+    add(pi, "whoami", _cmd_pi_whoami, "扩展用：本会话的角色与 tsw MCP server 的启动方式")
+    pi_start = add(pi, "start", _cmd_pi_start, "主会话用：按 attempt_start 创建 pi worker 会话")
+    pi_start.add_argument("--name", required=True, help="attempt_start 返回的 session_name")
+    pi_start.add_argument("--cwd", required=True, help="attempt_start 返回的会话目录")
+    pi_start.add_argument("--title", help="会话标题")
+    pi_prompt = pi_start.add_mutually_exclusive_group(required=True)
+    pi_prompt.add_argument("--prompt", help="attempt_start 返回的 prompt")
+    pi_prompt.add_argument("--prompt-file", help="prompt 所在的文件")
+    pi_send = add(pi, "send", _cmd_pi_send, "给另一个会话发消息（会话间消息，不是用户的话）")
+    pi_send.add_argument("--to", required=True, help="目标会话（pi:<会话名> 或主会话 ID）")
+    pi_message = pi_send.add_mutually_exclusive_group(required=True)
+    pi_message.add_argument("--message")
+    pi_message.add_argument("--message-file")
+    pi_stop = add(pi, "stop", _cmd_pi_stop, "主会话用：停止 pi worker 会话")
+    pi_stop.add_argument("--name", required=True)
+    add(pi, "list", _cmd_pi_list, "列出本数据目录的 pi worker 会话")
+    add(pi, "poll", _cmd_pi_poll, "扩展用：主会话的邮箱与到期的提问转交")
+    pi_guard = add(pi, "guard", _cmd_pi_guard, "扩展用：pi 事件经 tsw 护栏")
+    pi_guard.add_argument(
+        "event", choices=["SessionStart", "PreToolUse", "UserPromptSubmit", "Stop"]
+    )
+    pi_chat = add(pi, "chat", _cmd_pi_chat, "与 pi worker 直接对话（用户本人在会话外的终端运行）")
+    pi_chat.add_argument("target", help="任务 ID 或 pi 会话名")
+
     reviewer_cmd = sub.add_parser(
         "reviewer", help="评审器、评审模型与推理强度（DN004 §3.4）"
     ).add_subparsers(dest="reviewer_command", required=True, metavar="<reviewer command>")
@@ -1278,7 +1385,7 @@ def _check_main_session_command(args: argparse.Namespace) -> None:
     """
     if not direct.in_host_session(os.environ):
         return
-    who = _session_identity(args) if os.environ.get(SESSION_ENV) else None
+    who = _session_identity(args) if session_of(os.environ) else None
     if who is not None and who.role == "orchestrator":
         return
     command = command_path(args)
@@ -1300,7 +1407,7 @@ def _check_setup_command(args: argparse.Namespace) -> None:
     session may not: they must not install or update the host. A process that is in a session
     without saying which one cannot be resolved to any of those and counts as unrelated.
     """
-    if not os.environ.get(SESSION_ENV):
+    if not session_of(os.environ):
         return
     who = _session_identity(args)
     if who is None or (who.role in ("none", "orchestrator") and not who.pending):
@@ -1330,7 +1437,7 @@ def _check_host_session(args: argparse.Namespace) -> None:
     if command_path(args) in SETUP_CLI_COMMANDS:
         _check_setup_command(args)
         return
-    if not os.environ.get(SESSION_ENV) or command_path(args) in HOST_CLI_COMMANDS:
+    if not session_of(os.environ) or command_path(args) in HOST_CLI_COMMANDS:
         return
     root = Path(args.home) if args.home else resolve_home(repo_root=REPO_ROOT)
     if not (root / "tsw-home.json").is_file():

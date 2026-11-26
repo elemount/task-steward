@@ -51,6 +51,7 @@ def steps_by_name(out: dict) -> dict[str, dict]:
 
 
 @pytest.mark.use_case(UC)
+@pytest.mark.windows
 def test_a_terminal_install_from_nothing_reaches_a_verified_install(tmp_path: Path) -> None:
     product, claude = make_product(tmp_path), fake_claude(tmp_path)
     home = tmp_path / "data"
@@ -200,6 +201,7 @@ def test_the_session_path_repoints_the_installed_plugin_at_the_checkout(tmp_path
 
 
 @pytest.mark.use_case(UC)
+@pytest.mark.windows
 def test_an_interrupted_install_keeps_its_ownership_and_uninstall_takes_back_only_its_own(
     tmp_path: Path,
 ) -> None:
@@ -369,6 +371,7 @@ def test_manual_user_settings_and_the_dashboard_service(tmp_path: Path) -> None:
 
 
 @pytest.mark.use_case(UC)
+@pytest.mark.windows
 def test_verify_after_reload_needs_the_shim_on_path_and_nothing_pending(tmp_path: Path) -> None:
     product, claude = make_product(tmp_path), fake_claude(tmp_path)
     home = tmp_path / "data"
@@ -389,6 +392,7 @@ def test_verify_after_reload_needs_the_shim_on_path_and_nothing_pending(tmp_path
 
 
 @pytest.mark.use_case(UC)
+@pytest.mark.windows
 def test_the_cmd_shim_an_uninstall_runs_through_is_deleted_after_it_exits(tmp_path: Path) -> None:
     from tsw.setup import winenv  # noqa: PLC0415
 
@@ -434,6 +438,7 @@ def test_uninstall_leaves_a_plugin_the_install_found_from_a_local_directory(
 
 
 @pytest.mark.use_case(UC)
+@pytest.mark.windows
 def test_an_install_that_failed_before_the_plugin_step_leaves_the_plugin_alone(
     tmp_path: Path,
 ) -> None:
@@ -573,6 +578,7 @@ def test_uninstall_restores_a_marketplace_that_had_no_user_install(tmp_path: Pat
 
 
 @pytest.mark.use_case(UC)
+@pytest.mark.windows
 def test_an_uninstall_whose_plugin_restore_fails_stops_and_can_be_run_again(
     tmp_path: Path,
 ) -> None:

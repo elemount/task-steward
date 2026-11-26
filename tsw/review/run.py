@@ -41,7 +41,7 @@ from tsw.machine.model import loads, row_dict
 from tsw.machine.runner import run_tool
 from tsw.machine.worker import CATEGORIES, VERDICTS, validate_result
 from tsw.plugins.catalog import SESSIONS
-from tsw.review import claude, copilot
+from tsw.review import claude, copilot, pi
 from tsw.review.codex import ReviewRun, extract_json, resolve_executable, run_review
 from tsw.storage.fs import FsStorage
 from tsw.workspace import plan
@@ -52,13 +52,15 @@ REVIEWERS: dict[str, Reviewer] = {
     "codex-app-server": run_review,
     "claude-headless": claude.run_review,
     "copilot-cli": copilot.run_review,
+    "pi-cli": pi.run_review,
 }
 # Reviewers that cannot run commands: tsw writes the round's diff for them (DN004 §3.1).
-NO_SHELL = frozenset({"claude-headless", "copilot-cli"})
+NO_SHELL = frozenset({"claude-headless", "copilot-cli", "pi-cli"})
 EXECUTABLES: dict[str, Callable[[str | None], str]] = {
     "codex-app-server": resolve_executable,
     "claude-headless": claude.resolve,
     "copilot-cli": copilot.resolve,
+    "pi-cli": pi.resolve,
 }
 # Reviewers an earlier version had and this one removed: a round one of them opened is retried
 # with the configured reviewer (DN004 §3.2).

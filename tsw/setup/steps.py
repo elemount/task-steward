@@ -40,12 +40,12 @@ from tsw.home import (
     record_render,
     remember_home,
 )
-from tsw.host import claude_install, dashboard_service, workdeck
+from tsw.host import claude_install, dashboard_service, pi_install, pi_render, workdeck
 from tsw.host.claude_code import AUTO_MODE_RULES, render_instructions
 from tsw.host.plugin_copy import update as update_plugin
 from tsw.host.version import REPO_ROOT, head, render_record
 from tsw.review import models as reviewer_models
-from tsw.setup import winenv
+from tsw.setup import posixenv, winenv
 from tsw.setup.questions import (
     Question,
     config_differences,
@@ -88,6 +88,12 @@ RESTART = (
     "并提议一个示例任务，看 TaskSteward 怎样执行一个任务（可以跳过，之后随时说“开始示例任务”）。"
     "需要时在主会话或新的终端中运行 tsw setup verify --after-reload 核对重新加载之后的结果"
 )
+PI_RESTART = (
+    "1. 打开一个新的终端（PATH 与 pi 包在新的进程中才生效）；"
+    "2. cd {home} && pi，信任这个目录一次（pi 才读取其中的 skill），它是主会话；"
+    "3. 输入 /skill:orchestrate 开始主会话；新环境里主会话先给你导览，并提议一个示例任务。"
+    "与某个 worker 直接对话：在另一个终端运行 tsw pi chat <任务 ID>"
+)
 # Reviewers an earlier version saved as an answer although this one does not offer them, and
 # what a rerun takes instead (the default when that is not offered either). T331 removed
 # claude-subagent.
@@ -116,6 +122,11 @@ class Context:
     def home_root(self) -> Path | None:
         value = self.answers.get("home") or self.record.get("home")
         return Path(value) if isinstance(value, str) and value else None
+
+    @property
+    def on_pi(self) -> bool:
+        """The ``pi`` host integration (PI001 §8): no Claude Code plugin or user settings."""
+        return self.answers.get("host") == "pi"
 
     @property
     def shims(self) -> Path:
@@ -252,11 +263,16 @@ def check(ctx: Context, *, with_questions: bool = False) -> dict[str, Any]:
         problems.append(f"python：需要 Python 3.10 以上（{ctx.python}）")
     if shutil.which("git", path=ctx.env.get("PATH")) is None:
         problems.append("git：找不到 git 命令")
-    if ctx.claude is None:
+    pi = pi_install.find_pi(ctx.env)
+    host = ctx.answers.get("host")
+    if ctx.claude is None and (host == "claude-code" or (host is None and pi is None)):
         problems.append(
             "claude：找不到 Claude Code 的命令行（先查 PATH，再查 %LOCALAPPDATA%\\Programs\\"
             "ClaudeCode\\claude.exe）；用 --claude 指定，或先安装 Claude Code"
+            + ("" if host else "；在 Linux / WSL 上也可以选 pi 作宿主（先安装 pi）")
         )
+    if host == "pi" and pi is None:
+        problems.append("pi：找不到 pi 命令行；先安装 pi（https://pi.dev），或用 TSW_PI 指定")
     if state == "not_empty":
         problems.append(f"home：{root} 不是空目录，也不是 TaskSteward 数据目录")
     if state == "missing_answer":
@@ -264,7 +280,8 @@ def check(ctx: Context, *, with_questions: bool = False) -> dict[str, Any]:
     if root is not None and _inside(root, ctx.checkout):
         problems.append("home：数据目录不能放在产品检出之中")
     plugin = claude_install.plugin_state(ctx.env, ctx.checkout)
-    value, _ = _user_path(ctx.env)
+    if os.name == "posix" and _shim_states(ctx, ctx.python)["tsw"] == "conflict":
+        problems.append(f"shim：{ctx.shims / 'tsw'} 已被占用，不替换已有命令")
     result: dict[str, Any] = {
         "checkout": {
             "path": str(ctx.checkout),
@@ -274,6 +291,7 @@ def check(ctx: Context, *, with_questions: bool = False) -> dict[str, Any]:
         },
         "python": {"path": ctx.python, "version": ".".join(map(str, version or ()))},
         "claude": ctx.claude,
+        "pi": pi,
         "home": {"path": str(root) if root else None, "state": state},
         "record": {
             "path": str(ctx.record.path),
@@ -284,7 +302,7 @@ def check(ctx: Context, *, with_questions: bool = False) -> dict[str, Any]:
         "answers": ctx.answers,
         "plugin": {k: plugin[k] for k in ("marketplace", "points_at_checkout", "installed")},
         "shims": str(ctx.shims),
-        "path_has_shims": winenv.has_entry(value, ctx.shims) if value is not None else False,
+        "path_has_shims": _path_has_shims(ctx),
         "problems": problems,
         "warnings": [
             *ctx.warnings,
@@ -319,11 +337,11 @@ def _inside(path: Path, root: Path) -> bool:
     return a == b or a.startswith(b.rstrip("\\/") + os.sep)
 
 
-def _user_path(env: Mapping[str, str]) -> tuple[str | None, int]:
-    try:
-        return winenv.read_user_path(env)
-    except TswError:
-        return None, winenv.EXPAND
+def _path_has_shims(ctx: Context) -> bool:
+    if os.name == "posix":
+        return posixenv.on_path(ctx.shims, ctx.env)
+    value, _ = winenv.read_user_path(ctx.env)
+    return winenv.has_entry(value, ctx.shims)
 
 
 # ---------------------------------------------------------------------- steps
@@ -346,8 +364,17 @@ def _machine(ctx: Context, apply: bool) -> dict[str, Any]:
     return {"state": "todo" if differs else "ok", "record": wanted, "changes": differs}
 
 
+def _shim_states(ctx: Context, python: str) -> dict[str, str]:
+    if os.name == "posix":
+        state = posixenv.shim_state(
+            ctx.shims / "tsw", posixenv.launcher(ctx.env), posixenv.script(python, ctx.checkout)
+        )
+        return {"tsw": state}
+    return winenv.shim_state(ctx.shims, python, ctx.checkout)
+
+
 def _shim(ctx: Context, apply: bool) -> dict[str, Any]:
-    states = winenv.shim_state(ctx.shims, ctx.python, ctx.checkout)
+    states = _shim_states(ctx, ctx.python)
     todo = [name for name, state in states.items() if state != "ok"]
     result: dict[str, Any] = {
         "state": "todo" if todo else "ok",
@@ -356,16 +383,34 @@ def _shim(ctx: Context, apply: bool) -> dict[str, Any]:
     }
     if apply and todo:
         ctx.record.begin("shim", {"dir": str(ctx.shims), "created_dir": not ctx.shims.exists()})
-        written = winenv.write_shims(ctx.shims, ctx.python, ctx.checkout)
-        ctx.record.finish("shim", files=["tsw.cmd", "tsw"], written=written)
+        if os.name == "posix":
+            posixenv.write_shim(
+                ctx.shims / "tsw",
+                posixenv.launcher(ctx.env),
+                posixenv.script(ctx.python, ctx.checkout),
+            )
+            written = ["tsw"]
+        else:
+            written = winenv.write_shims(ctx.shims, ctx.python, ctx.checkout)
+        ctx.record.finish("shim", files=list(states), written=written)
         result["written"] = written
     elif apply and not ctx.record.step("shim"):
         ctx.record.begin("shim", {"dir": str(ctx.shims), "created_dir": False})
-        ctx.record.finish("shim", files=["tsw.cmd", "tsw"], written=[])
+        ctx.record.finish("shim", files=list(states), written=[])
     return result
 
 
 def _path(ctx: Context, apply: bool) -> dict[str, Any]:
+    if os.name == "posix":
+        if _path_has_shims(ctx):
+            return {"state": "ok", "entry": str(ctx.shims)}
+        return {
+            "state": "manual",
+            "entry": str(ctx.shims),
+            "file": "shell 启动文件",
+            "note": "安装脚本不修改你的 PATH。请自行加入下行，并重新打开终端：",
+            "manual": 'export PATH="$HOME/.local/bin:$PATH"',
+        }
     value, kind = winenv.read_user_path(ctx.env)
     present = winenv.has_entry(value, ctx.shims)
     result: dict[str, Any] = {
@@ -382,7 +427,30 @@ def _path(ctx: Context, apply: bool) -> dict[str, Any]:
     return result
 
 
+def _pi_package(ctx: Context, apply: bool) -> dict[str, Any]:
+    present = pi_install.installed(ctx.env, ctx.checkout)
+    result: dict[str, Any] = {
+        "state": "ok" if present else "todo",
+        "actions": [] if present else [f"pi install {pi_install.package(ctx.checkout)}"],
+    }
+    if apply:
+        # Its own step: a Claude Code plugin recorded under "plugin" has its own owner (review F8).
+        ctx.record.begin("pi_package", {"installed_before": present})
+        if not present:
+            pi = pi_install.find_pi(ctx.env)
+            if pi is None:
+                raise rejected("找不到 pi 命令行，不能安装 pi 包", reason="pi_missing")
+            report = pi_install.install(ctx.env, pi, ctx.checkout)
+            if not report["ok"]:
+                raise rejected("pi 包没有装好", reason="plugin_failed", report=report)
+            result["report"] = report
+        ctx.record.finish("pi_package", package=str(pi_install.package(ctx.checkout)))
+    return result
+
+
 def _plugin(ctx: Context, apply: bool) -> dict[str, Any]:
+    if ctx.on_pi:
+        return _pi_package(ctx, apply)
     state = claude_install.plugin_state(ctx.env, ctx.checkout)
     planned = claude_install.plugin_actions(state, ctx.checkout)
     result: dict[str, Any] = {
@@ -472,6 +540,8 @@ def _home(ctx: Context, apply: bool) -> dict[str, Any]:
 
 
 def _user_settings(ctx: Context, apply: bool) -> dict[str, Any]:
+    if ctx.on_pi:
+        return {"state": "skipped", "note": "pi 不需要用户设置：扩展从产品检出运行 tsw（PI001 §8）"}
     values = ctx.desired_env()
     path = claude_install.settings_path(ctx.env)
     if not ctx.answers.get("user_settings", True):
@@ -527,15 +597,17 @@ def _render(ctx: Context, apply: bool) -> dict[str, Any]:
         cast("dict[str, Any]", rendered).get("commit") if isinstance(rendered, dict) else None
     )
     files_ok = root is not None and (root / "CLAUDE.md").is_file()
-    plugin = claude_install.plugin_state(ctx.env, ctx.checkout)
-    todo = bool(not files_ok or commit != (found or {}).get("commit") or not plugin["current"])
+    current = ctx.on_pi or claude_install.plugin_state(ctx.env, ctx.checkout)["current"]
+    todo = bool(not files_ok or commit != (found or {}).get("commit") or not current)
     result: dict[str, Any] = {"state": "todo" if todo else "ok", "rendered": commit}
     if apply and todo and root is not None:
         home = open_home(root)
         with FsStorage(home).writer():
             written = render_instructions(home)
+            if ctx.on_pi:
+                written += pi_render.render(home, written)
             record_render(home, render_record(ctx.checkout))
-        report = update_plugin(ctx.env)
+        report = {} if ctx.on_pi else update_plugin(ctx.env)
         result["written"] = len(written)
         result["plugin"] = {
             k: report.get(k) for k in ("update", "next", "note") if report.get(k) is not None
@@ -630,6 +702,11 @@ def _tail(output: str, lines: int = 8) -> list[str]:
 
 
 def _workdeck(ctx: Context, apply: bool) -> dict[str, Any]:
+    if ctx.on_pi:
+        return {
+            "state": "skipped",
+            "note": "workdeck 只投递到 Claude 会话，pi 上不可用（PI001 §7）",
+        }
     """Add the Dashboard to the local workdeck portal (DN009 §5 step 7, CC006 §13; T309).
 
     Skipped when the recorded manifest is the one wanted now. workdeck refusing or failing is
@@ -817,7 +894,7 @@ def install(
         "steps": results,
         "verify": verification,
         "record": str(ctx.record.path),
-        "next": RESTART.format(home=root),
+        "next": (PI_RESTART if ctx.on_pi else RESTART).format(home=root),
         "start_command": START_COMMAND,
         "demo_prompt": DEMO_PROMPT,
         "warnings": checked["warnings"],
@@ -839,11 +916,11 @@ def _installer_session(ctx: Context) -> str | None:
     """The session this install runs in when it is bound to no data directory (role none): it
     stands down after the install (DN009 §15.1). The main session rerunning the install, and a
     terminal, are not recorded."""
-    from tsw.host.identity import SESSION_ENV  # noqa: PLC0415
     from tsw.host.identity import resolve as resolve_identity  # noqa: PLC0415
+    from tsw.host.identity import session_of  # noqa: PLC0415
     from tsw.ledger import Ledger  # noqa: PLC0415
 
-    session = ctx.env.get(SESSION_ENV)
+    session = session_of(ctx.env)
     root = ctx.home_root
     if not session:
         return None
@@ -943,22 +1020,30 @@ def verify(
     checks: list[dict[str, Any]] = []
     root = ctx.home_root
     python = str(ctx.record.get("python") or ctx.python)
-    states = winenv.shim_state(ctx.shims, python, ctx.checkout)
+    states = _shim_states(ctx, python)
     checks.append(_check("shims", all(s == "ok" for s in states.values()), states))
-    value, _ = _user_path(ctx.env)
-    checks.append(_check("path_persisted", winenv.has_entry(value, ctx.shims), str(ctx.shims)))
-    plugin = claude_install.plugin_state(ctx.env, ctx.checkout)
-    checks.append(_check("plugin_source", plugin["points_at_checkout"], plugin["marketplace"]))
-    checks.append(
-        _check(
-            "plugin_copy",
-            plugin["current"],
-            [
-                {k: c.get(k) for k in ("version", "current", "differs") if k in c}
-                for c in plugin["copies"]
-            ],
+    if os.name == "posix":
+        checks.append(
+            _check("path_persisted", None, "由你的 shell 管理；生效情况见 path_effective")
         )
-    )
+    else:
+        checks.append(_check("path_persisted", _path_has_shims(ctx), str(ctx.shims)))
+    if ctx.on_pi:
+        package = str(pi_install.package(ctx.checkout))
+        checks.append(_check("pi_package", pi_install.installed(ctx.env, ctx.checkout), package))
+    else:
+        plugin = claude_install.plugin_state(ctx.env, ctx.checkout)
+        checks.append(_check("plugin_source", plugin["points_at_checkout"], plugin["marketplace"]))
+        checks.append(
+            _check(
+                "plugin_copy",
+                plugin["current"],
+                [
+                    {k: c.get(k) for k in ("version", "current", "differs") if k in c}
+                    for c in plugin["copies"]
+                ],
+            )
+        )
     if root is None or not (root / MARKER).is_file():
         checks.append(_check("home", False, str(root) if root else None))
     else:
@@ -972,7 +1057,9 @@ def verify(
         )
         config = load_config(open_home(root))
         checks.append(_check("config_valid", config.valid, config.problems or None))
-        if ctx.answers.get("user_settings", ctx.record.step("user_settings") != {}):
+        if ctx.on_pi:
+            checks.append(_check("user_settings", None, "pi 不需要用户设置"))
+        elif ctx.answers.get("user_settings", ctx.record.step("user_settings") != {}):
             data, _ = claude_install.read_settings(ctx.env)
             diff = claude_install.settings_diff(data or {}, ctx.desired_env(), AUTO_MODE_RULES)
             checks.append(_check("user_settings", not diff, diff or None))
@@ -1088,6 +1175,23 @@ def uninstall(ctx: Context) -> dict[str, Any]:
     wired = ctx.record.step("workdeck")
     if wired.get("added") or wired.get("state") == "started":
         done["workdeck"] = _remove_workdeck(ctx, wired)
+    package = ctx.record.step("pi_package")
+    pi = pi_install.find_pi(ctx.env)
+    if package.get("installed_before"):
+        done["pi_package"] = {"ok": True, "note": "安装前就已装好 pi 包，保留"}
+    elif package and pi is not None:
+        done["pi_package"] = pi_install.remove(ctx.env, pi, ctx.checkout)
+    elif package:
+        done["pi_package"] = {"ok": False, "note": "找不到 pi 命令行，pi 包没有移除"}
+    if not done.get("pi_package", {"ok": True}).get("ok"):
+        # As for the Claude Code plugin below: stop before the shims (review G1).
+        ctx.record.set(status="uninstalling")
+        raise rejected(
+            "pi 包没有移除，卸载停在这一步（垫片未动）；修正原因后重新运行 tsw setup uninstall",
+            reason="uninstall_incomplete",
+            step="pi_package",
+            removed=done,
+        )
     plugin = ctx.record.step("plugin")
     if not plugin:
         done["plugin"] = {"ok": True, "note": "安装没有动过插件，保留"}
@@ -1110,9 +1214,13 @@ def uninstall(ctx: Context) -> dict[str, Any]:
     if owned:
         done["user_settings"] = claude_install.remove_user_settings(ctx.env, owned, ctx.backups)
     shims = Path(str(ctx.record.step("shim").get("dir") or ctx.shims))
-    done["shims"] = winenv.remove_shims(shims, ctx.env)
+    if os.name == "posix":
+        if ctx.record.step("shim"):
+            done["shims"] = posixenv.remove_shim(shims / "tsw", posixenv.launcher(ctx.env))
+    else:
+        done["shims"] = winenv.remove_shims(shims, ctx.env)
     path_entry = ctx.record.step("path")
-    if path_entry.get("added"):
+    if os.name != "posix" and path_entry.get("added"):
         value, kind = winenv.read_user_path(ctx.env)
         if winenv.has_entry(value, shims):
             winenv.write_user_path(ctx.env, winenv.without_entry(value, shims), kind)
@@ -1172,9 +1280,11 @@ def _remove_workdeck(ctx: Context, wired: Mapping[str, Any]) -> dict[str, Any]:
 def manual_steps(home_text: str) -> list[str]:
     """The steps a manual install takes, the same as ``install``'s (``host install-hint``)."""
     return [
-        "推荐：在终端运行产品检出中的 setup.ps1，或运行 tsw setup install --interactive；"
+        "推荐：在终端运行产品检出中的 setup.ps1（Windows）或 setup.sh（Linux/WSL），"
+        "或运行 tsw setup install --interactive；"
         "它按下面的步骤做完并核对（tsw setup plan 只读列出要做的事）。手工安装时依次：",
-        "1. 机器级安装项：把 tsw 垫片（tsw.cmd 与无扩展名的 sh 脚本，运行检出中的 "
+        "1. 机器级安装项：把 tsw 垫片（Linux 为 ~/.local/bin/tsw，Windows 另有 tsw.cmd，"
+        "运行检出中的 "
         "plugin/bin/tsw_launch.py）放进一个目录，并把该目录加入用户级 PATH；开发者也可以在产品"
         "检出中运行 python -m pip install -e .",
         "2. 插件：claude plugin marketplace add <产品检出>，再 claude plugin install "

@@ -59,7 +59,7 @@ RENDER_SOURCES = frozenset({"tsw/host/claude_code.py", "tsw/roles.py"})
 CLAUDE_CODE = "tsw/host/claude_code.py"
 # The install script and its entries (DN009 §10): a change reruns ``tsw setup install``. The
 # MCP server never imports ``tsw/setup/`` (checked with NOT_IN_MCP's test), so no reload.
-INSTALL_FILES = frozenset({"pyproject.toml", "setup.ps1"})
+INSTALL_FILES = frozenset({"pyproject.toml", "setup.ps1", "setup.sh"})
 INSTALL_PREFIXES = ("tsw/setup/",)
 PROJECTION = "tsw/projection.py"
 INDEX = "tsw/context/index.py"
@@ -99,6 +99,9 @@ def classify(path: str) -> list[str]:
         return ["install"]
     if top == "plugin":
         return ["rendered"] if path.startswith("plugin/roles/") else ["plugin"]
+    if top == "pi":
+        # The pi extension is loaded from the checkout when a pi session starts (PI001 §8).
+        return ["runtime"]
     if top == "tsw":
         if path in SKILLS or path.endswith("_skill.md"):
             return ["rendered"]

@@ -25,6 +25,10 @@
 `claims` 列出该 use case 认领的对外表面：`cli:<命令>`（tsw CLI 命令）、`tool:<名称>`（tsw 工具）、
 `mcp:<名称>`（MCP 工具）。
 
+可选字段 `platforms`（`windows`、`posix` 的非空列表，缺省为两者）写明只在哪些平台上测试：在另一个平台上
+运行时，它的必需层级（live 除外）报告为未验证，不算失败；在列出的平台上照常要求测试。CI 的 Windows 与
+Linux 测试阶段各覆盖一部分，`Gate` 要求两者都通过（[ci.md](ci.md)）。
+
 - 每个条目都有示例中的全部字段：`id`、`title`、`actor`、`acceptance`、`component`、`status` 为非空
   文本，`surfaces` 为非空列表（取值 `cli`、`mcp`、`hook`、`plugin`），`claims` 为列表，`requiredTiers`
   为列表，`omittedTiers` 为对象。

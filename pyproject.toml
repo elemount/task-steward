@@ -78,6 +78,8 @@ markers = [
     "use_case(id): the use case (UC-...) this test covers",
     "transition(id): the DN002 transition or guard (T.., E.., G-..) this test covers",
     "alone: as pytestmark, tools/gate.py runs the file in a process of its own after the others",
+    "windows: behaviour that exists only on Windows; not collected on other platforms",
+    "posix: behaviour that exists only on Linux / WSL (the pi host); not collected on Windows",
 ]
 
 [tool.coverage.run]

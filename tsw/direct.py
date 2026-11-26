@@ -24,8 +24,15 @@ from tsw.machine.base import Caller
 from tsw.machine.model import task
 from tsw.machine.runner import run_tool
 
-# Claude Code sets these in every session's processes (CC008 §5.5); either one means a session.
-SESSION_MARKERS = ("CLAUDE_CODE_HOST_SESSION_ID", "CLAUDECODE")
+# Claude Code sets these in every session's processes (CC008 §5.5), pi sets the last two in every
+# process it starts (PI001 §4.1); any one means a session.
+SESSION_MARKERS = (
+    "CLAUDE_CODE_HOST_SESSION_ID",
+    "CLAUDECODE",
+    "TSW_SESSION_ID",
+    "PI_SESSION_ID",
+    "PI_CODING_AGENT",
+)
 
 # action -> (tool, decision kind of the G-USER target, label)
 ACTIONS: dict[str, tuple[str, str, str]] = {

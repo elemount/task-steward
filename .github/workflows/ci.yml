@@ -1,5 +1,6 @@
 # CI for every pull request and every push to main (docs/development/ci.md).
-# All stages run on Windows; the aggregate `Gate` job is the only required status check.
+# All stages run on Windows, and the tests also on Linux (the pi host, PI001); the aggregate
+# `Gate` job is the only required status check.
 # `scope` selects the stages a change needs (tools/scope.py, tools/scope.json): lint and docs run
 # every time, test when the change needs it; a push to main runs every stage.
 # No secrets are used. Changes to this file need the repository owner's confirmation.
@@ -107,15 +108,18 @@ jobs:
           path: results/docs
 
   test:
-    name: test (${{ matrix.python }})
+    name: test (${{ matrix.id }})
     needs: scope
     if: ${{ needs.scope.result == 'success' && contains(fromJSON(needs.scope.outputs.stages), 'test') }}
-    runs-on: windows-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.10", "3.13"]
+        include:
+          - { id: "3.10", os: windows-latest, python: "3.10" }
+          - { id: "3.13", os: windows-latest, python: "3.13" }
+          - { id: "linux-3.13", os: ubuntu-latest, python: "3.13" }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -127,17 +131,18 @@ jobs:
         run: python -m pip install -r requirements-dev.txt
         timeout-minutes: 5
       - name: Test tiers and use-case coverage
-        run: python tools/gate.py --steps tests,catalog --results-dir results/test-${{ matrix.python }}
+        run: python tools/gate.py --steps tests,catalog --results-dir results/test-${{ matrix.id }}
         timeout-minutes: 30
         env:
-          # Test data directories go to the runner's work disk instead of the system disk.
-          TMP: ${{ runner.temp }}
-          TEMP: ${{ runner.temp }}
+          # Test data directories go to the runner's work disk instead of the system disk on
+          # Windows. Linux keeps /tmp: Unix socket paths have to stay short.
+          TMP: ${{ runner.os == 'Windows' && runner.temp || '' }}
+          TEMP: ${{ runner.os == 'Windows' && runner.temp || '' }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() }}
         with:
-          name: test-${{ matrix.python }}
-          path: results/test-${{ matrix.python }}
+          name: test-${{ matrix.id }}
+          path: results/test-${{ matrix.id }}
           include-hidden-files: true
 
   gate:

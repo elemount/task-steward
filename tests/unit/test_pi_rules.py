@@ -15,6 +15,7 @@ from tsw.host.guard import bash_problem
 from tsw.host.identity import session_of
 from tsw.machine.ask_user import is_automated
 from tsw.review import pi
+from tsw.review.models import Model, ModelList
 from tsw.setup import questions as q
 
 PI = "UC-PI-002"
@@ -168,3 +169,25 @@ def test_the_shell_knows_the_pi_commands_and_refuses_the_hook_entry(home: Home) 
     assert problem("tsw pi stop --name t001-a1-g1") is None
     assert problem("tsw pi list") is None
     assert "hook" in str(problem("tsw pi guard UserPromptSubmit"))
+
+
+@pytest.mark.use_case("UC-REVIEW-004")
+def test_the_terminal_accepts_a_pi_model_with_its_provider(tmp_path: Path) -> None:
+    listed = ModelList("pi-cli", [Model("github-copilot/claude-haiku-4.5"), Model("openai/x")])
+    replies = iter([str(tmp_path / "data"), "", "pi-cli", "", "", "", "", "", "", ""])
+    said: list[str] = []
+    answers = q.ask(
+        q.questions({"PATH": ""}, Path.cwd()),
+        {},
+        lambda _prompt: next(replies),
+        said.append,
+        lambda _reviewer: listed,
+    )
+    assert answers["reviewer"] == "pi-cli"
+    assert answers["reviewer_model"] == "github-copilot/claude-haiku-4.5"
+    assert not any("格式不正确" in line for line in said)
+    # The question bound to pi-cli checks a model on its own too (the arrow-key interface).
+    model = next(x for x in q.questions({"PATH": ""}, Path.cwd()) if x.id == "reviewer_model")
+    bound = q.bind(model, {"reviewer": "pi-cli"}, lambda _reviewer: listed)
+    assert bound is not None
+    assert q.normalize({"reviewer_model": "openai/x"}, [bound])[1] == []

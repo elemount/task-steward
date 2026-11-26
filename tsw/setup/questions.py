@@ -187,12 +187,17 @@ def bind(q: Question, answers: Mapping[str, Any], find: Lister | None) -> Questi
                 kind="choice",
                 choices=tuple(m.id for m in found.models),
                 default=default,
-                extra={**q.extra, "labels": {k: v for k, v in labels.items() if v}},
+                extra={
+                    **q.extra,
+                    "labels": {k: v for k, v in labels.items() if v},
+                    "reviewer": reviewer,
+                },
             )
         return replace(
             q,
             kind="text",
             default=default,
+            extra={**q.extra, "reviewer": reviewer},
             note=f"取不到 {reviewer} 的模型列表（{found.error}）：输入模型 ID；"
             "它未经核实，第一轮评审时核实，不可用即失败",
         )
@@ -397,9 +402,10 @@ def normalize(answers: Mapping[str, Any], qs: list[Question]) -> tuple[dict[str,
             value = q.default
         if q.id in MODEL_QUESTIONS and value is None:
             continue  # not answered: the reviewer's default model and effort (DN004 §3.4)
-        if q.id == "reviewer_model" and not valid_model_id(
-            answers.get("reviewer"), str(value).strip()
-        ):
+        # The reviewer decides the form of its model IDs (pi's are provider/model): from the
+        # answers, else from the question bound to it (a question checked on its own).
+        reviewer = answers.get("reviewer") or q.extra.get("reviewer")
+        if q.id == "reviewer_model" and not valid_model_id(reviewer, str(value).strip()):
             problems.append(f"{q.id}：模型 ID 格式不正确（{value}）")
             continue
         if q.id == "reviewer_effort" and str(value).strip() not in EFFORTS:
